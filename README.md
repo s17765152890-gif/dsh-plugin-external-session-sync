@@ -1,3 +1,5 @@
+![External Session Sync — import Codex and Claude Code conversations into DSH, continue work, and archive older sessions](assets/external-session-sync-hero.png)
+
 # dsh-plugin-external-session-sync
 
 A standard DSH (DeepSeek Harness) plugin bundle that imports **Codex** and **Claude Code** conversation history into **native DSH sessions**, verifies that each imported chat is registered in its project, and lets you continue the work inside DSH. It also ships **bulk archival** for old sessions.
