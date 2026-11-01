@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "External Conversation Sync",
+    "description": "Import Codex and Claude Code history into native DSH sessions with verified project membership and work handoff, plus bulk archival of old sessions."
+  }
+}

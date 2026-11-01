@@ -1,0 +1,52 @@
+{
+  "name": "dsh-plugin-external-session-sync",
+  "version": "1.0.0",
+  "description": "Sync Codex and Claude Code conversation history into native DSH sessions, verify project membership, and archive old sessions in bulk.",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "codex",
+    "claude-code",
+    "session-sync",
+    "migration"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "engine.js",
+    "discovery.js",
+    "readers.js",
+    "native.js",
+    "client.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=22.5"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": []
+    }
+  }
+}

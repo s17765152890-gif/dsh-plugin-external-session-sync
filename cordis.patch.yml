@@ -1,0 +1,6 @@
+# Bundle patch for dsh-plugin-external-session-sync.
+# Installing this bundle inserts one Host row that also carries the browser half
+# declared under `dsh.client` in package.json.
+- insert:
+    - id: external-session-sync-native
+      name: dsh-plugin-external-session-sync

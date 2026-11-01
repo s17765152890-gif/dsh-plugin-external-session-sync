@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "外部会话同步",
+    "description": "把 Codex 与 Claude Code 的历史会话导入为 DSH 原生会话，校验项目归属并可继续对话，同时支持批量归档旧会话。"
+  }
+}
