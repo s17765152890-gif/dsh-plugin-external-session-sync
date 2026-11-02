@@ -64,6 +64,23 @@ Visible user and assistant text, title, and working directory. Tool calls, hidde
 - Archiving uses DSH's registry, so it is reversible with `workspaceRegistry.unarchiveSession`.
 - `deleteEmptyWorkspaces` only runs after a real archive in the same request; an empty request can never unregister projects.
 
+## Session format compatibility
+
+DSH records the first surface event of a session as its **protected system head** and rejects
+any later `system/message` when no head was recorded
+(`system/message requires a protected first surface head`). Continuing an imported chat makes
+the runtime append its own system message, so an import that starts with a user message
+corrupts the log on the first continued turn.
+
+Imports therefore open with `turn/start -> step/start -> system/message` (role `system`,
+source `system-prompt`, carrying an id) and only then the transcript.
+
+`POST /external-session-sync/self-check` runs the generated shape through DSH's own session
+validator, once as written and once with the appended runtime system message, so a profile
+upgrade cannot silently break imports.
+
+Sessions imported by versions before 1.0.2 lack that head and can still corrupt when continued.
+
 ## Known limitations
 
 - Codex `state_5.sqlite` may lag behind the newest rollout; discovery compensates by scanning rollouts, but a thread whose files are all gone cannot be imported.

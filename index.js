@@ -3,7 +3,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import crypto from 'node:crypto';
 import { SyncEngine } from './engine.js';
+import { nativeEvents } from './native.js';
 
 export const name = 'dsh-plugin-external-session-sync';
 
@@ -169,6 +171,46 @@ export function apply(ctx) {
   });
 
   route('/validate', 'GET', async (req, res, url) => send(res, await engine.validateSession(url.searchParams.get('id'))));
+
+  // Runs the importer's event shape through DSH's own session validator twice: the
+  // events as written, and with the system message the runtime appends when the user
+  // continues the chat. Nothing is persisted; the id is throwaway.
+  route('/self-check', 'POST', async (req, res) => {
+    const now = Date.now();
+    const conversation = {
+      title: 'shape check',
+      startedAt: now,
+      messages: [
+        { role: 'user', text: 'first question', timestamp: now - 2000 },
+        { role: 'assistant', text: 'first answer', timestamp: now - 1000 },
+      ],
+    };
+    const base = nativeEvents(conversation, 'codex');
+    const continuation = [...base];
+    const turn = Math.max(0, ...base.filter((event) => event.type === 'turn/start').map((event) => event.data.turn)) + 1;
+    const push = (type, data, surface = false) => {
+      const event = { type, seq: continuation.length, time: now, data };
+      if (surface) event.surfaceOp = 'append';
+      continuation.push(event);
+    };
+    push('turn/start', { turn });
+    push('step/start', { turn, step: 1 });
+    push('system/message', { turn, step: 1, message: { role: 'system', id: crypto.randomUUID(), source: { kind: 'system-prompt' }, content: [{ type: 'text', text: 'runtime prompt' }] } }, true);
+    push('step/end', { turn, step: 1 });
+    push('turn/end', { turn, reason: { kind: 'completed' } });
+    const check = (events) => {
+      try {
+        ctx.sessions.prepare(`session-${crypto.randomUUID()}`, {
+          seed: events,
+          meta: { createdAt: now, isSeeded: false, delegationDepth: 0, agentPreset: 'standard', cwd: home },
+        });
+        return { ok: true };
+      } catch (error) {
+        return { ok: false, error: error.message };
+      }
+    };
+    send(res, { events: base.length, importedShape: check(base), afterContinuation: check(continuation) });
+  });
 
   route('/health', 'GET', async (req, res) =>
     send(res, {
