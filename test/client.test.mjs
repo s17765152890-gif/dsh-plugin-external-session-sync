@@ -12,12 +12,13 @@ async function harness(options={}) {
   const workspaceState=options.workspaceState || {items:[],pinnedSessionIds:[],archivedSessionIds:[]};
   const requests=[];
   const React={createElement:(type,props,...children)=>({type,props:props||{},children}),Fragment:'fragment',Component:class{constructor(props){this.props=props||{};this.state={};}setState(next){this.state={...this.state,...(typeof next==='function'?next(this.state,this.props):next)};}},useRef(value){const i=cursor++;return hooks[i] ||= {current:value};},useState(value){const i=cursor++;if(!(i in hooks))hooks[i]=value;return [hooks[i],next=>{hooks[i]=typeof next==='function'?next(hooks[i]):next;}];},useEffect(fn,deps){const i=cursor++;if(!hooks[i]||deps.some((d,j)=>d!==hooks[i][j])){hooks[i]=deps;effects.push(fn);}}};
+  const reply=(payload,status=200)=>({ok:status<400,status,text:async()=>JSON.stringify(payload)});
   const fetch=async(url,requestOptions)=>{
     requests.push({url,options:requestOptions});
-    if(url.endsWith('/status')){if(fail)throw new Error('test connection failure');return {ok:true,json:async()=>({counts:{codex:rows.length,claude:0},discovered:rows,scannedAt:Date.now()})};}
-    if(url.includes('/conversation?')){reads++;return {ok:true,json:async()=>({title:'context',source:'codex',messages:[{role:'user',text:'turn '+reads}],totalMessages:1})};}
-    if(url.endsWith('/archive')){const payload=JSON.parse(requestOptions.body);return {ok:true,json:async()=>({requested:payload.sessionIds.length,archived:payload.sessionIds,skippedPinned:[],failed:[],deletedWorkspaces:[]})};}
-    return {ok:true,json:async()=>({ok:true})};
+    if(url.endsWith('/status')){if(fail)throw new Error('test connection failure');return reply({counts:{codex:rows.length,claude:0},discovered:rows,scannedAt:Date.now()});}
+    if(url.includes('/conversation?')){reads++;return reply({title:'context',source:'codex',messages:[{role:'user',text:'turn '+reads}],totalMessages:1});}
+    if(url.endsWith('/archive')){const payload=JSON.parse(requestOptions.body);return reply({requested:payload.sessionIds.length,archived:payload.sessionIds,skippedPinned:[],failed:[],deletedWorkspaces:[]});}
+    return reply({ok:true});
   };
   const context={window:{__ModuleLoader__:{load:r=>registration=r},confirm:()=>options.confirm!==false},fetch,AbortController,Date,console,setTimeout:(fn,ms)=>ms===15000||ms===120000?setTimeout(fn,ms):0,clearTimeout};
   vm.runInNewContext(fs.readFileSync(new URL('../client.js',import.meta.url),'utf8'),context);

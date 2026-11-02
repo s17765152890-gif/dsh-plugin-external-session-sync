@@ -9,12 +9,28 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
   const button={font:'inherit',color:color.text,background:color.layer,border:'1px solid '+color.border,borderRadius:7,padding:'6px 10px',cursor:'pointer'};
   async function api(path,body) {
     const controller=new AbortController();
-    const timer=setTimeout(()=>controller.abort(),path.startsWith('/status')?15000:120000);
+    const timeoutMs=path.startsWith('/status')?20000:180000;
+    const timer=setTimeout(()=>controller.abort(),timeoutMs);
     try {
-      const r=await fetch(API+path,{credentials:'same-origin',cache:'no-store',signal:controller.signal,...(body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-DSH-Sync':'1'},body:JSON.stringify(body)})});
-      let value;try{value=await r.json();}catch{throw new Error('同步服务返回了无效响应，请重试刷新');}
-      if(!r.ok)throw new Error(value.error || '请求失败 '+r.status);return value;
-    }catch(error){if(error.name==='AbortError')throw new Error('读取会话超时，请点击刷新重试');throw error;}finally{clearTimeout(timer);}
+      let response;
+      try {
+        response=await fetch(API+path,{credentials:'same-origin',cache:'no-store',signal:controller.signal,...(body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json','X-DSH-Sync':'1'},body:JSON.stringify(body)})});
+      } catch(error) {
+        if(error.name==='AbortError')throw new Error(`请求超时（${Math.round(timeoutMs/1000)} 秒），大历史导入可能较慢，请稍后重试或分批同步`);
+        throw new Error('无法连接同步服务：'+error.message);
+      }
+      let text;
+      try { text=await response.text(); }
+      catch(error) {
+        if(error.name==='AbortError')throw new Error('读取响应超时，请稍后重试');
+        throw new Error('读取响应失败：'+error.message);
+      }
+      let value;
+      try { value=JSON.parse(text); }
+      catch { throw new Error(`同步服务返回了非 JSON 响应（HTTP ${response.status}）${text?('：'+text.slice(0,160)):''}`); }
+      if(!response.ok)throw new Error(value.error || '请求失败 '+response.status);
+      return value;
+    } finally { clearTimeout(timer); }
   }
   function report(kind,details={}) {api('/client-state',{kind,...details,...(verifyId?{verificationId:verifyId}:{})}).catch(()=>{});}
   function Glyph({size=16}) {return h('span',{'aria-hidden':true,style:{fontSize:size,lineHeight:1}},'↻');}

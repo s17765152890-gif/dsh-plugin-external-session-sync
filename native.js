@@ -47,6 +47,10 @@ export function nativeEvents(conversation, source) {
     }
   }
   endTurn();
-  append('session/title', {title:conversation.title || '外部会话', messageSeqs:userAnchor === undefined ? [] : [userAnchor], source:{kind:'fallback'}});
+  // DSH requires messageSeqs to be non-empty for every non-user title. With no user
+  // message to anchor, emit no title event at all: DSH derives one from the history.
+  if (userAnchor !== undefined) {
+    append('session/title', {title:conversation.title || '外部会话', messageSeqs:[userAnchor], source:{kind:'fallback'}});
+  }
   return events;
 }

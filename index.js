@@ -95,6 +95,11 @@ export function apply(ctx) {
     send(res, lastSync);
   });
 
+  route('/sync', 'POST', async (req, res) => {
+    lastSync = await engine.sync(await readBody(req));
+    send(res, lastSync);
+  });
+
   route('/archive', 'POST', async (req, res) => {
     const request = await readBody(req);
     const requested = [...new Set(Array.isArray(request.sessionIds) ? request.sessionIds.filter(Boolean) : [])];

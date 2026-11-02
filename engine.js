@@ -180,6 +180,18 @@ export class SyncEngine {
     return conversation;
   }
 
+  /** Distinguish "no stored log" from "a stored log this DSH version cannot read". */
+  async usableSession(id) {
+    try {
+      if (!(await this.ctx.sessionPersistence.stat(id))) return { exists: false, corrupt: false };
+      await this.ctx.sessionController.inspect(id);
+      return { exists: true, corrupt: false };
+    } catch (error) {
+      if (/corrupt/i.test(String(error && error.message))) return { exists: true, corrupt: true };
+      throw error;
+    }
+  }
+
   async run(options = {}) {
     const all = await this.discover({ source: options.source });
     const ids = options.ids ? new Set(options.ids) : null;
@@ -191,6 +203,7 @@ export class SyncEngine {
       imported: [],
       skipped: [],
       repaired: [],
+      recovered: [],
       archived: [],
       failed: [],
       dryRun: !!options.dryRun,
@@ -211,7 +224,15 @@ export class SyncEngine {
       const key = `${row.source}:${row.id}`;
       const previous = this.state.entries[key];
       try {
-        if (previous?.revision === row.revision && (await this.ctx.sessionPersistence.stat(previous.sessionId))) {
+        let reusable = false;
+        if (previous?.revision === row.revision) {
+          const state = await this.usableSession(previous.sessionId);
+          reusable = state.exists && !state.corrupt;
+          // A log left by an older writer can be unreadable; re-import under a fresh
+          // identity instead of failing the whole conversation forever.
+          if (state.corrupt) report.recovered.push({ key, previous: previous.sessionId, reason: 'corrupt-session-log' });
+        }
+        if (reusable) {
           const inspected = await this.ctx.sessionController.inspect(previous.sessionId);
           const messages = visibleMessages(inspected.events).length;
           if (!messages) throw new Error('已同步会话没有有效消息，无法标记为同步完成');
@@ -252,13 +273,23 @@ export class SyncEngine {
           }
         }
         cwd ||= path.resolve(import.meta.dirname, '../..');
-        const id = nativeId(row.source, row.id, `${row.revision}|${cwd}`);
+        let id = nativeId(row.source, row.id, `${row.revision}|${cwd}`);
         if (report.dryRun) {
           report.imported.push({ key, id, title: conversation.title || row.title, messages: conversation.messages.length, cwd });
           continue;
         }
 
-        const stored = await this.ctx.sessionPersistence.stat(id);
+        let stored = await this.ctx.sessionPersistence.stat(id);
+        if (stored) {
+          const state = await this.usableSession(id);
+          if (state.corrupt) {
+            // Keep the unreadable log untouched and give this snapshot a readable identity.
+            const brokenId = id;
+            id = nativeId(row.source, row.id, `${row.revision}|${cwd}|recovered`);
+            stored = await this.ctx.sessionPersistence.stat(id);
+            report.recovered.push({ key, previous: brokenId, sessionId: id, reason: 'corrupt-session-log' });
+          }
+        }
         if (!stored) {
           const events = nativeEvents(conversation, row.source);
           const meta = {
