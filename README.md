@@ -81,6 +81,25 @@ upgrade cannot silently break imports.
 
 Sessions imported by versions before 1.0.2 lack that head and can still corrupt when continued.
 
+### Migrating older imports
+
+`GET /external-session-sync/legacy-imports` lists every mapping whose log has no protected
+head, split into re-importable and no-longer-recoverable ones. `POST
+/external-session-sync/migrate-heads` archives the old session and re-imports the same source
+conversation under a new identity, in batches:
+
+```bash
+curl -s -XPOST -H 'x-dsh-sync: 1' -H 'content-type: application/json' \
+  -d '{"dryRun":true}' http://127.0.0.1:<port>/external-session-sync/migrate-heads
+curl -s -XPOST -H 'x-dsh-sync: 1' -H 'content-type: application/json' \
+  -d '{"dryRun":false,"limit":30}' http://127.0.0.1:<port>/external-session-sync/migrate-heads
+```
+
+Repeat until `remaining` reaches 0 or a batch reports no progress. Mappings whose source
+history is gone are never touched. Archiving is reversible with
+`workspaceRegistry.unarchiveSession(oldSessionId)`, and each run appends a rollback journal at
+`$DSH_HOME/external-session-sync/migration-<timestamp>.json`.
+
 ## Known limitations
 
 - Codex `state_5.sqlite` may lag behind the newest rollout; discovery compensates by scanning rollouts, but a thread whose files are all gone cannot be imported.

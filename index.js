@@ -212,6 +212,21 @@ export function apply(ctx) {
     send(res, { events: base.length, importedShape: check(base), afterContinuation: check(continuation) });
   });
 
+  route('/legacy-imports', 'GET', async (req, res) => {
+    const rows = await engine.legacyImports();
+    send(res, {
+      count: rows.length,
+      reimportable: rows.filter((row) => row.reimportable && !row.unreadable).length,
+      unrecoverable: rows.filter((row) => !row.reimportable).length,
+      unreadable: rows.filter((row) => row.unreadable).length,
+      sample: rows.slice(0, 5),
+    });
+  });
+
+  // Archive legacy logs (no protected head) and re-import the same source conversation
+  // under a fresh identity. Old logs stay archived, so unarchiveSession reverses it.
+  route('/migrate-heads', 'POST', async (req, res) => send(res, await engine.migrateLegacyHeads(await readBody(req))));
+
   route('/health', 'GET', async (req, res) =>
     send(res, {
       ...diagnostics,

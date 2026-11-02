@@ -9,7 +9,7 @@ export function canonicalCwd(value) {
 }
 
 export function nativeId(source, id, revision) {
-  const bytes = crypto.createHash('sha256').update(`dsh-sync-native-1:${source}:${id}:${revision}`).digest().subarray(0, 16);
+  const bytes = crypto.createHash('sha256').update(`dsh-sync-native-2:${source}:${id}:${revision}`).digest().subarray(0, 16);
   bytes[6] = (bytes[6] & 15) | 0x50;
   bytes[8] = (bytes[8] & 63) | 0x80;
   const s = bytes.toString('hex');

@@ -394,4 +394,99 @@ export class SyncEngine {
         ?.slice(0, 300),
     };
   }
+/** Does this stored session open with a protected system head? Uses the public reader. */
+  async inspectHead(sessionId) {
+    try {
+      const read = await this.ctx.sessionController.inspect(sessionId);
+      const first = read.events.find(
+        (event) => event.surfaceOp === 'append' || ['system/message', 'user/message', 'developer/message', 'assistant/message', 'tool/result'].includes(event.type),
+      );
+      return { sessionId, headOk: first?.type === 'system/message', firstType: first?.type || null, eventCount: read.events.length };
+    } catch (error) {
+      return { sessionId, headOk: false, firstType: null, unreadable: error.message };
+    }
+  }
+
+  /** Every mapping whose log predates the protected head, split by whether it can be re-imported. */
+  async legacyImports() {
+    const discovered = await this.discover({});
+    const available = new Set(discovered.map((row) => `${row.source}:${row.id}`));
+    const rows = [];
+    for (const [key, entry] of Object.entries(this.state.entries)) {
+      if (!entry.sessionId) continue;
+      const head = await this.inspectHead(entry.sessionId);
+      if (head.headOk) continue;
+      const split = key.indexOf(':');
+      rows.push({
+        key,
+        sessionId: entry.sessionId,
+        source: key.slice(0, split),
+        externalId: key.slice(split + 1),
+        title: entry.title || null,
+        reimportable: available.has(key),
+        firstType: head.firstType,
+        unreadable: head.unreadable || null,
+      });
+    }
+    return rows;
+  }
+
+  /**
+   * Archive a legacy mapping and re-import the same source conversation under a new
+   * native id (the importer's format salt guarantees a fresh identity). The old log is
+   * archived, never deleted, so `workspaceRegistry.unarchiveSession` reverses this.
+   */
+  async migrateLegacyHeads(options = {}) {
+    const rows = await this.legacyImports();
+    const candidates = rows.filter((row) => row.reimportable && !row.unreadable);
+    const batch = candidates.slice(0, Math.max(1, Math.min(50, Number(options.limit) || 20)));
+    const summary = {
+      total: rows.length,
+      reimportable: candidates.length,
+      unrecoverable: rows.filter((row) => !row.reimportable),
+      unreadable: rows.filter((row) => row.unreadable).length,
+    };
+    if (options.dryRun !== false) {
+      return { ...summary, dryRun: true, batch: batch.map(({ key, title, sessionId, firstType }) => ({ key, title, sessionId, firstType })) };
+    }
+    const journal = { startedAt: new Date().toISOString(), rows: [] };
+    const ids = [];
+    for (const row of batch) {
+      try {
+        await this.ctx.workspaceRegistry.archiveSession(row.sessionId, { stopActivity: false });
+        delete this.state.entries[row.key];
+        this.save();
+        ids.push(row.externalId);
+        journal.rows.push({ key: row.key, oldSessionId: row.sessionId, archived: true });
+      } catch (error) {
+        journal.rows.push({ key: row.key, oldSessionId: row.sessionId, archived: false, error: error.message });
+      }
+    }
+    const report = ids.length ? await this.run({ ids }) : null;
+    if (report) {
+      for (const item of report.imported) {
+        const row = journal.rows.find((entry) => entry.key === item.key);
+        if (row) row.newSessionId = item.id;
+      }
+      for (const item of report.failed) {
+        const row = journal.rows.find((entry) => entry.key === item.key);
+        if (row) row.importError = item.error;
+      }
+    }
+    journal.finishedAt = new Date().toISOString();
+    const root = path.join(this.home, 'external-session-sync');
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(path.join(root, `migration-${Date.now()}.json`), JSON.stringify(journal, null, 2));
+    const remaining = await this.legacyImports();
+    return {
+      ...summary,
+      dryRun: false,
+      batch: batch.length,
+      archived: journal.rows.filter((row) => row.archived).length,
+      archiveFailures: journal.rows.filter((row) => !row.archived),
+      imported: report ? report.imported.length : 0,
+      importFailures: report ? report.failed : [],
+      remaining: remaining.length,
+    };
+  }
 }
