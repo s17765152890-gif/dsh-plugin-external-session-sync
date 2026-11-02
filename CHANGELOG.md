@@ -2,6 +2,21 @@
 
 All notable changes to `dsh-plugin-external-session-sync`.
 
+## 1.1.1 — 2026-11-02
+
+### Added
+
+- `POST /external-session-sync/unarchive`: the reverse of `/archive`, so a migration or an
+  over-eager archive run can be undone per session without touching logs.
+
+### Changed
+
+- Migration guidance: run `migrate-heads` in small batches. Importing hundreds of large
+  histories in one pass is memory-heavy and can restart the DSH process mid-run; a restart
+  aborts the in-flight batch with `cannot get required service ... in inactive context`.
+  Archive-then-import is idempotent, so recovering means re-running `sync` for the archived
+  conversations whose `newSessionId` is missing from the migration journal.
+
 ## 1.1.0 — 2026-11-02
 
 ### Added

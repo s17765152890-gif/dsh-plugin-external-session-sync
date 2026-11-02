@@ -212,6 +212,23 @@ export function apply(ctx) {
     send(res, { events: base.length, importedShape: check(base), afterContinuation: check(continuation) });
   });
 
+  // Reverse of /archive: brings sessions back to the sidebar without touching their logs.
+  route('/unarchive', 'POST', async (req, res) => {
+    const request = await readBody(req);
+    const requested = [...new Set(Array.isArray(request.sessionIds) ? request.sessionIds.filter(Boolean) : [])];
+    const unarchived = [];
+    const failed = [];
+    for (const sessionId of requested) {
+      try {
+        await ctx.workspaceRegistry.unarchiveSession(sessionId);
+        unarchived.push(sessionId);
+      } catch (error) {
+        failed.push({ id: sessionId, error: error.message });
+      }
+    }
+    send(res, { requested: requested.length, unarchived, failed });
+  });
+
   route('/legacy-imports', 'GET', async (req, res) => {
     const rows = await engine.legacyImports();
     send(res, {
