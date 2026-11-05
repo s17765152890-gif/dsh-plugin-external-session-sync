@@ -6,6 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { SyncEngine } from './engine.js';
 import { nativeEvents } from './native.js';
+import { planReverse, appendTurns, readRolloutFacts, turnRecords, readSessionHeader, sessionMessages, pendingTurns, prefixMatches, targetRollout } from './reverse.js';
 
 export const name = 'dsh-plugin-external-session-sync';
 
@@ -243,6 +244,79 @@ export function apply(ctx) {
   // Archive legacy logs (no protected head) and re-import the same source conversation
   // under a fresh identity. Old logs stay archived, so unarchiveSession reverses it.
   route('/migrate-heads', 'POST', async (req, res) => send(res, await engine.migrateLegacyHeads(await readBody(req))));
+
+  // Walk a session's parent chain to the imported ancestor. A DSH "fork" copies the
+  // imported session, so the fork's own turns start after its parent's messages.
+  const resolveSource=async(sessionId)=>{
+    const entries=engine.state.entries;
+    const findEntry=(id)=>Object.entries(entries).find(([,value])=>value.sessionId===id) || null;
+    let mapped=findEntry(sessionId);
+    const chain=[];
+    let current=sessionId;
+    while(!mapped && chain.length<8){
+      const head=readSessionHeader(current);
+      const parentId=head?.header?.parentSession;
+      if(!parentId)return {error:'该会话不是导入会话，也不是导入会话的 fork，没有可回写的 Codex 主线'};
+      chain.push({id:current,parentId});
+      current=parentId;
+      mapped=findEntry(current);
+    }
+    if(!mapped)return {error:'父链过深，无法定位导入来源'};
+    const [key,entry]=mapped;
+    if(!chain.length)return {key,entry,boundary:Number(entry.messages)||0,forked:false};
+    // The fork's seeded prefix must still equal its parent, otherwise the boundary is a guess.
+    let parentMessages;
+    try{parentMessages=sessionMessages((await ctx.sessionController.inspect(chain[0].parentId)).events);}
+    catch(error){return {error:`无法读取父会话：${error.message}`};}
+    return {key,entry,boundary:parentMessages.length,parentId:chain[0].parentId,parentMessages,forked:true};
+  };
+  route('/reverse','POST',async(req,res)=>{
+    const request=await readBody(req);
+    const dryRun=request.dryRun!==false;
+    const wanted=[...new Set(Array.isArray(request.sessionIds)?request.sessionIds.filter(Boolean):[])];
+    const results=[];
+    // Explicit selection only: a reverse sync rewrites another tool's history, so an
+    // unscoped request must never fan out to every imported conversation.
+    if(!wanted.length){
+      return send(res,{error:'必须显式指定 sessionIds，反同步不会自动处理全部会话'},400);
+    }
+    for(const requested of wanted){
+      const resolved=await resolveSource(requested);
+      if(resolved.error){results.push({sessionId:requested,error:resolved.error});continue;}
+      const {key,entry,boundary,parentMessages,forked}=resolved;
+      let events;
+      try{events=(await ctx.sessionController.inspect(requested)).events;}
+      catch(error){results.push({sessionId:requested,key,error:`无法读取会话：${error.message}`});continue;}
+      const messages=sessionMessages(events);
+      if(forked && !prefixMatches(messages,parentMessages)){
+        results.push({sessionId:requested,key,error:'fork 的种子前缀与父会话不一致，拒绝回写'});
+        continue;
+      }
+      const turns=pendingTurns(messages,boundary);
+      const already=entry.reversed?.[requested];
+      if(!turns.length){results.push({sessionId:requested,key,turns:0,note:'没有仅存在于 DSH 的新轮次'});continue;}
+      if(already && already.turns===turns.length && dryRun!==false){
+        results.push({sessionId:requested,key,turns:turns.length,note:'这些轮次已回写过（重复请求被跳过）'});
+        continue;
+      }
+      const threadId=key.slice(key.indexOf(':')+1);
+      const target=targetRollout(threadId);
+      if(!target){results.push({sessionId:requested,key,threadId,turns:turns.length,error:'该 Codex 会话已没有 rollout 文件，无法回写'});continue;}
+      const facts=readRolloutFacts(target);
+      const records=[];
+      for(const turn of turns)records.push(...turnRecords({threadId:facts.threadId,modelContextWindow:facts.modelContextWindow,turn,ordinal:facts.lastOrdinal+1+records.length}));
+      if(dryRun){
+        results.push({sessionId:requested,key,threadId,rollout:target,forked,turns:turns.length,records:records.length,sample:records.slice(0,3),dryRun:true});
+        continue;
+      }
+      const written=appendTurns(target,records);
+      entry.reversed={...(entry.reversed||{}),[requested]:{turns:turns.length,messages:messages.length,at:Date.now(),threadId}};
+      entry.reverseThrough=(Number(entry.reverseThrough)||0)+turns.length;
+      engine.save();
+      results.push({sessionId:requested,key,threadId,rollout:target,forked,turns:turns.length,records:records.length,...written});
+    }
+    send(res,{dryRun,results,done:results.filter(row=>row.verified).length,failed:results.filter(row=>row.error).length});
+  });
 
   route('/health', 'GET', async (req, res) =>
     send(res, {

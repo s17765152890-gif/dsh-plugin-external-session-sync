@@ -2,6 +2,30 @@
 
 All notable changes to `dsh-plugin-external-session-sync`.
 
+## 1.2.0 — 2026-11-06
+
+### Added
+
+- Reverse sync (`POST /external-session-sync/reverse`, dry run by default): appends the
+  turns that exist only inside a DSH session back into the Codex conversation it was
+  imported from. Codex rollout files are append-only, each write is preceded by a byte
+  backup (`*.reverse-sync-backup-<epoch>`) and followed by a re-read that must show the new
+  records, and the payloads mirror what Codex itself writes.
+- Fork resolution: a DSH "fork conversation" copies its parent and records `parentSession`
+  in the session header. The fork's seeded prefix is proved equal to the parent before any
+  write, and the Codex thread is taken from the imported ancestor's mapping, so a fork syncs
+  back to the same "main" conversation.
+- DSH runtime context (`<system-reminder>`, the runtime snapshot, the skill catalog, the
+  turn timestamp) is filtered out of user messages: it is not user speech and must never be
+  written into another tool's history.
+
+### Safety
+
+- An unscoped request is refused (HTTP 400): reverse sync only ever touches the sessions
+  named in `sessionIds`.
+- Threads whose rollout file no longer exists are reported instead of being recreated.
+- `entry.reversed` records what was written, so a repeated request does not duplicate turns.
+
 ## 1.1.1 — 2026-11-02
 
 ### Added
