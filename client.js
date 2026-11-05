@@ -89,15 +89,18 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
   function DeleteArchivedFooterButton({wide}) {
     const [busy,setBusy]=React.useState(false);
     React.useEffect(()=>{report('dsh-delete-button-mounted',{wide:!!wide});},[]);
+    function say(message) {
+      try { if (typeof window!=='undefined' && typeof window.alert==='function') window.alert(message); } catch {}
+    }
     async function run() {
       if(busy)return;
       setBusy(true);
       try {
         const plan=await api('/delete-archived',{dryRun:true});
-        if(!plan.candidates){report('dsh-delete-empty',{});return;}
+        if(!plan.candidates){say('没有可删除的已归档会话。');report('dsh-delete-empty',{});return;}
         const mb=(plan.bytes/1048576).toFixed(1);
         const ask=typeof window!=='undefined' && typeof window.confirm==='function'
-          ? window.confirm(`将永久删除 ${plan.candidates} 个已归档会话（约 ${mb} MB）。\n置顶、正在打开、已删除的会话会跳过。${DELETE_CONFIRM}`)
+          ? window.confirm(`将永久删除 ${plan.candidates} 个已归档会话（约 ${mb} MB）。\n置顶、正在打开、已删除的会话会跳过。删除后无法恢复，也没有备份。继续？`)
           : false;
         if(!ask){report('dsh-delete-cancelled',{count:plan.candidates});return;}
         const again=typeof window!=='undefined' && typeof window.confirm==='function'
@@ -105,8 +108,13 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
           : false;
         if(!again){report('dsh-delete-cancelled',{count:plan.candidates,stage:'second'});return;}
         const result=await api('/delete-archived',{dryRun:false});
+        const freed=(result.freedBytes/1048576).toFixed(2);
+        say(`已删除 ${result.deleted} 个会话，释放 ${freed} MB。${result.remaining>0?`\n仍有 ${result.remaining} 个可继续清理。`:''}${result.failed.length?`\n失败 ${result.failed.length} 个。`:''}`);
         report('dsh-delete-complete',{deleted:result.deleted,freedBytes:result.freedBytes,remaining:result.remaining,failed:result.failed.length});
-      }catch(error){report('dsh-delete-error',{error:error.message});}
+      }catch(error){
+        say('删除失败：'+error.message);
+        report('dsh-delete-error',{error:error.message});
+      }
       finally{setBusy(false);}
     }
     return h('button',{type:'button',style:button,'data-testid':'dsh-delete-archived',disabled:busy,title:'永久删除已归档会话的正文与存档（不可恢复）',onClick:run},busy?'删除中…':'删除已归档');
@@ -262,3 +270,5 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
   }
   return {apply,inject};
 }});
+
+// build-marker: delete-visible-1.7.3
