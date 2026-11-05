@@ -22,7 +22,7 @@ export const inject = [
 ];
 
 export const API = '/external-session-sync';
-const VERSION = '1.0.0';
+const VERSION = '1.7.2';
 const PACKAGE_ID = 'dsh-plugin-external-session-sync';
 const MAX_BODY_BYTES = 64 * 1024;
 const DIAGNOSTIC_EVENTS = 60;
@@ -326,6 +326,7 @@ export function apply(ctx) {
         : {}),
     }),
   );
+  route('/refresh-client','POST',async(req,res)=>send(res,{revision:ctx.clientModules.rebuilt('dsh-plugin-external-session-sync')}));
   route('/client-graph', 'GET', async (req, res) =>
     send(res, {
       entries: ctx.clientModules.graph().entries.filter((entry) => entry.id === PACKAGE_ID),

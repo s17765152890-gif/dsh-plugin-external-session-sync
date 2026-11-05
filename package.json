@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-external-session-sync",
-  "version": "1.3.0",
+  "version": "1.7.2",
   "description": "Sync Codex and Claude Code conversation history into native DSH sessions, verify project membership, and archive old sessions in bulk.",
   "keywords": [
     "dsh",
