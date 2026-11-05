@@ -47,6 +47,8 @@ test('the panel renders its controls even when the workspace hook is unavailable
   const app=await harness();
   assert.ok(app.text(app.tree).includes('外部会话同步与接力'));
   assert.ok(app.text(app.tree).includes('归档旧会话'));
+  assert.ok(app.text(app.tree).includes('同步到 DSH'));
+  assert.ok(app.text(app.tree).includes('反同步到外界'));
   assert.ok(app.text(app.tree).includes('1个月前'));
   assert.equal(app.byTestId('external-sync-render-error'),null);
 });

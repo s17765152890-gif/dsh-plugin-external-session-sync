@@ -97,6 +97,7 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
     const root=React.useRef(null),request=React.useRef(0),catalogRequest=React.useRef(0),mounted=React.useRef(true);
     const [catalog,setCatalog]=React.useState(null),[selected,setSelected]=React.useState(null),[conversation,setConversation]=React.useState(null);
     const [source,setSource]=React.useState('codex'),[query,setQuery]=React.useState(''),[busy,setBusy]=React.useState(false),[loading,setLoading]=React.useState(false),[refreshing,setRefreshing]=React.useState(true),[notice,setNotice]=React.useState('正在读取会话列表…'),[error,setError]=React.useState(''),[archiveMonths,setArchiveMonths]=React.useState('1');
+    const [tab,setTab]=React.useState('in');
     const [reverseRows,setReverseRows]=React.useState(null),[reverseBusy,setReverseBusy]=React.useState(false),[reverseNotice,setReverseNotice]=React.useState('');
     async function load() {
       const token=++catalogRequest.current;setRefreshing(true);setError('');
@@ -219,24 +220,29 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
     return h('section',{ref:root,'data-testid':'external-sync-panel',style:{height:'100%',minHeight:0,display:'flex',flexDirection:'column',color:color.text,background:color.bg,fontSize:13}},
       h('div',{style:{padding:'12px',borderBottom:'1px solid '+color.border,flexShrink:0}},
         h('div',{style:{fontSize:15,fontWeight:650,marginBottom:8}},'外部会话同步与接力'),
-        h('div',{style:{display:'flex',gap:6,flexWrap:'wrap',alignItems:'center'}},
+        h('div',{role:'tablist',style:{display:'flex',gap:6,marginBottom:8}},
+          h('button',{type:'button','data-testid':'external-sync-tab-in',onClick:()=>setTab('in'),style:{...button,background:tab==='in'?color.layer:'transparent',fontWeight:tab==='in'?650:400,color:tab==='in'?color.text:color.muted}},'同步到 DSH'),
+          h('button',{type:'button','data-testid':'external-sync-tab-out',onClick:()=>setTab('out'),style:{...button,background:tab==='out'?color.layer:'transparent',fontWeight:tab==='out'?650:400,color:tab==='out'?color.text:color.muted}},'反同步到外界')),
+        h('div',{style:{display:tab==='in'?'flex':'none',gap:6,flexWrap:'wrap',alignItems:'center'}},
           h('select',{value:source,onChange:e=>{setSource(e.target.value);const first=catalog?.discovered.find(i=>i.source===e.target.value);if(first)select(first);},style:{...button,padding:5}},h('option',{value:'codex'},`Codex (${catalog?.counts.codex ?? '…'})`),h('option',{value:'claude'},`Claude (${catalog?.counts.claude ?? '…'})`)),
           btn(refreshing?'刷新中…':'刷新',()=>refresh(),busy||refreshing,'external-sync-refresh'),btn('同步全部',()=>runSync(true),busy||refreshing||!catalog,'external-sync-all'),btn(busy?'处理中…':'同步所选',()=>runSync(false),busy||refreshing||!selected,'external-sync-selected'),
           btn('在 DSH 继续',handoff,busy||!selected?.dshSessionId,'external-sync-handoff'),
            h('select',{'data-testid':'external-sync-archive-months',value:archiveMonths,onChange:e=>setArchiveMonths(e.target.value),disabled:busy,style:{...button,padding:5},title:'置顶会话永不归档'},h('option',{value:'1'},'1个月前'),h('option',{value:'3'},'3个月前'),h('option',{value:'6'},'6个月前'),h('option',{value:'12'},'1年前')),
            btn('归档旧会话',archiveOld,busy||refreshing||!catalog,'external-sync-archive-old'),
-           btn(reverseBusy?'检查中…':'反同步到 Codex',scanReverse,reverseBusy,'external-sync-reverse-scan'),
           main?btn('在右侧查看',()=>openPanel(selected?{source:selected.source,id:selected.id}:undefined),false):null),
-        notice?h('div',{'role':'status','data-testid':'external-sync-result',style:{marginTop:8,color:'var(--dsw-alias-state-success-primary)',whiteSpace:'pre-wrap'}},notice):null,
-        error?h('div',{'role':'alert',style:{marginTop:8,color:'var(--dsw-alias-state-error-primary)',whiteSpace:'pre-wrap'}},error):null,
-        (reverseNotice || (reverseRows && reverseRows.length))?h('div',{'data-testid':'external-sync-reverse',style:{marginTop:8,fontSize:12,lineHeight:1.6}},
-          reverseNotice?h('div',{style:{color:color.muted}},'反同步：'+reverseNotice):null,
-          reverseRows && reverseRows.length?h('div',{style:{display:'flex',flexDirection:'column',gap:4,marginTop:4}},
+        tab==='in'&&notice?h('div',{'role':'status','data-testid':'external-sync-result',style:{marginTop:8,color:'var(--dsw-alias-state-success-primary)',whiteSpace:'pre-wrap'}},notice):null,
+        tab==='in'&&error?h('div',{'role':'alert',style:{marginTop:8,color:'var(--dsw-alias-state-error-primary)',whiteSpace:'pre-wrap'}},error):null,
+        tab==='out'?h('div',{'data-testid':'external-sync-reverse',style:{marginTop:8,fontSize:12,lineHeight:1.6}},
+          h('div',{style:{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}},
+            btn(reverseBusy?'检查中…':'扫描可反同步会话',scanReverse,reverseBusy,'external-sync-reverse-scan'),
+            reverseNotice?h('span',{style:{color:color.muted}},reverseNotice):null),
+          h('div',{style:{marginTop:6,color:color.muted,fontSize:11}},'只列出「仅在 DSH 有新增轮次、且 Codex 仍有 rollout 文件」的会话；写入是追加，不覆盖，写前自动备份。'),
+          reverseRows && reverseRows.length?h('div',{style:{display:'flex',flexDirection:'column',gap:4,marginTop:6}},
             reverseRows.map(row=>h('div',{key:row.sessionId,'data-external-reverse':row.sessionId,style:{display:'flex',gap:8,alignItems:'center'}},
               h('span',{style:{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},(sessionState.byId?.[row.sessionId]?.title||'未命名会话')+` · ${row.turns} 轮 · ${String(row.threadId||'').slice(0,8)}`),
               btn('反同步',()=>doReverse(row),reverseBusy,'external-sync-reverse-write')))):null):null),
-      h('div',{style:{padding:'8px 12px',borderBottom:'1px solid '+color.border}},h('input',{placeholder:'搜索标题或项目目录',value:query,onChange:e=>setQuery(e.target.value),style:{...button,width:'100%',boxSizing:'border-box'}})),
-      h('div',{style:{display:'flex',flex:1,minHeight:0}},
+      h('div',{style:{display:tab==='in'?'block':'none',padding:'8px 12px',borderBottom:'1px solid '+color.border}},h('input',{placeholder:'搜索标题或项目目录',value:query,onChange:e=>setQuery(e.target.value),style:{...button,width:'100%',boxSizing:'border-box'}})),
+      h('div',{style:{display:tab==='in'?'flex':'none',flex:1,minHeight:0}},
         h('div',{style:{width:main?230:180,maxWidth:'35%',flexShrink:0,overflow:'auto',borderRight:'1px solid '+color.border,padding:6}},
           items.map(i=>h('button',{key:i.source+':'+i.id,'data-external-session':i.id,type:'button',onClick:()=>select(i),title:i.title+'\n'+(i.cwd||''),style:{width:'100%',textAlign:'left',display:'block',background:selected?.id===i.id?color.layer:'transparent',border:0,color:color.text,borderRadius:6,padding:8,cursor:'pointer'}},
             h('div',{style:{fontWeight:550,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},i.title),h('div',{style:{fontSize:10,color:color.muted,overflow:'hidden',whiteSpace:'nowrap',textOverflow:'ellipsis',marginTop:3}},i.cwd||'未记录目录'),h('div',{style:{fontSize:10,color:color.muted,marginTop:3}},i.dshSessionId&&pinnedSessionIds.has(i.dshSessionId)?'置顶（归档时跳过）':i.dshSessionId&&archivedSessionIds.has(i.dshSessionId)?'已归档':i.synced&&i.workspaceAttached===false?'正文已保存，需同步修复项目关联':i.upToDate?'已同步':i.synced?'源会话有更新':'未同步'))),
