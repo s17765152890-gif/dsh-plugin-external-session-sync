@@ -84,17 +84,20 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
     }
     return h('button',{type:'button',style:button,'data-testid':'dsh-archive-old',disabled:busy,title:`归档 ${DSH_ARCHIVE_MONTHS} 个月前的 DSH 会话（置顶跳过）`,onClick:run},busy?'归档中…':'旧会话归档',wide?null:null);
   }
-  function Panel({useTabInfo,useWorkspaces,main=false}) {
+  function Panel({useTabInfo,useWorkspaces,useSessions,main=false}) {
     const info=typeof useTabInfo==='function'?useTabInfo():null;
     // Never read a service off the Context unless it is injected: Cordis throws for a
     // service the plugin did not declare, and that throw unmounts the whole panel.
     const useWs=typeof useWorkspaces==='function'?useWorkspaces:useNoWorkspaceState;
     const workspaceState=useWs(state=>state) || EMPTY_WORKSPACE_STATE;
+    const useSess=typeof useSessions==='function'?useSessions:useNoSessions;
+    const sessionState=useSess(state=>state) || EMPTY_SESSIONS;
     const pinnedSessionIds=new Set(workspaceState.pinnedSessionIds || []);
     const archivedSessionIds=new Set(workspaceState.archivedSessionIds || []);
     const root=React.useRef(null),request=React.useRef(0),catalogRequest=React.useRef(0),mounted=React.useRef(true);
     const [catalog,setCatalog]=React.useState(null),[selected,setSelected]=React.useState(null),[conversation,setConversation]=React.useState(null);
     const [source,setSource]=React.useState('codex'),[query,setQuery]=React.useState(''),[busy,setBusy]=React.useState(false),[loading,setLoading]=React.useState(false),[refreshing,setRefreshing]=React.useState(true),[notice,setNotice]=React.useState('正在读取会话列表…'),[error,setError]=React.useState(''),[archiveMonths,setArchiveMonths]=React.useState('1');
+    const [reverseRows,setReverseRows]=React.useState(null),[reverseBusy,setReverseBusy]=React.useState(false),[reverseNotice,setReverseNotice]=React.useState('');
     async function load() {
       const token=++catalogRequest.current;setRefreshing(true);setError('');
       try {
@@ -169,6 +172,43 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
         report('archive-complete',{source,months,candidates:candidates.length,archived:result.archived.length,skippedPinned:result.skippedPinned.length,failed,deletedWorkspaces:result.deletedWorkspaces.length,ids:result.archived});
       }catch(e){setError(e.message);setNotice('归档失败，请重试');report('archive-error',{error:e.message});}finally{setBusy(false);}
     }
+    // Reverse sync lives behind an explicit scan + per-row confirm: it appends to another
+    // tool's history, so nothing may happen on mount or for sessions the user did not pick.
+    function visibleSessionIds(){
+      return (sessionState.ids || []).filter(id=>{
+        const summary=sessionState.byId?.[id];
+        return !!summary && !summary.blank && !summary.removed;
+      });
+    }
+    async function scanReverse(){
+      const ids=visibleSessionIds();
+      if(!ids.length){setReverseNotice('拿不到 DSH 会话列表，无法检查');return;}
+      setReverseBusy(true);setReverseNotice('正在检查可反同步的会话…');
+      try {
+        const result=await api('/reverse',{dryRun:true,sessionIds:ids});
+        const rows=(result.results || []).filter(row=>!row.error && row.turns>0);
+        setReverseRows(rows);
+        setReverseNotice(rows.length?`找到 ${rows.length} 个仅在 DSH 有新增轮次的会话`:'没有仅存在于 DSH 的新轮次');
+        report('reverse-scanned',{sessions:ids.length,candidates:rows.length,errors:(result.results||[]).filter(row=>row.error).length});
+      }catch(e){setReverseNotice('检查失败：'+e.message);report('reverse-scan-error',{error:e.message});}
+      finally{setReverseBusy(false);}
+    }
+    async function doReverse(row){
+      const title=sessionState.byId?.[row.sessionId]?.title || '未命名会话';
+      const ask=typeof window!=='undefined' && typeof window.confirm==='function'
+        ? window.confirm(`把「${title}」中仅存在于 DSH 的 ${row.turns} 轮对话，追加写入 Codex 会话 ${row.threadId}？\n\n只追加、不覆盖；写入前会备份 rollout 文件。`)
+        : false;
+      if(!ask){report('reverse-cancelled',{sessionId:row.sessionId});return;}
+      setReverseBusy(true);
+      try {
+        const result=await api('/reverse',{dryRun:false,sessionIds:[row.sessionId]});
+        const done=(result.results || []).find(r=>r.verified);
+        setReverseNotice(done?`已写入 ${done.appended} 条记录（备份 ${done.backup.split('\\').pop()}）`:'没有写入任何记录');
+        if(done)setReverseRows(rows=>(rows||[]).filter(r=>r.sessionId!==row.sessionId));
+        report('reverse-complete',{sessionId:row.sessionId,appended:done?.appended || 0,verified:!!done});
+      }catch(e){setReverseNotice('反同步失败：'+e.message);report('reverse-error',{error:e.message});}
+      finally{setReverseBusy(false);}
+    }
     React.useEffect(()=>{
       if(!catalog)return;
       const timer=setTimeout(()=>{const rows=root.current?.querySelectorAll('[data-external-session]') || [];const archiveButton=root.current?.querySelector('[data-testid=external-sync-archive-old]');const monthSelect=root.current?.querySelector('[data-testid=external-sync-archive-months]');report('catalog-rendered',{items:catalog.discovered.length,rows:rows.length,source,visible:!!root.current?.getClientRects().length,archiveControl:!!archiveButton,archiveEnabled:!!archiveButton&&!archiveButton.disabled,monthSelector:!!monthSelect,monthOptions:monthSelect?monthSelect.options.length:0,pinnedCount:pinnedSessionIds.size,archivedCount:archivedSessionIds.size,first:catalog.discovered.filter(i=>i.source===source).slice(0,3).map(i=>({id:i.id,title:i.title}))});},60);
@@ -185,9 +225,16 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
           btn('在 DSH 继续',handoff,busy||!selected?.dshSessionId,'external-sync-handoff'),
            h('select',{'data-testid':'external-sync-archive-months',value:archiveMonths,onChange:e=>setArchiveMonths(e.target.value),disabled:busy,style:{...button,padding:5},title:'置顶会话永不归档'},h('option',{value:'1'},'1个月前'),h('option',{value:'3'},'3个月前'),h('option',{value:'6'},'6个月前'),h('option',{value:'12'},'1年前')),
            btn('归档旧会话',archiveOld,busy||refreshing||!catalog,'external-sync-archive-old'),
+           btn(reverseBusy?'检查中…':'反同步到 Codex',scanReverse,reverseBusy,'external-sync-reverse-scan'),
           main?btn('在右侧查看',()=>openPanel(selected?{source:selected.source,id:selected.id}:undefined),false):null),
         notice?h('div',{'role':'status','data-testid':'external-sync-result',style:{marginTop:8,color:'var(--dsw-alias-state-success-primary)',whiteSpace:'pre-wrap'}},notice):null,
-        error?h('div',{'role':'alert',style:{marginTop:8,color:'var(--dsw-alias-state-error-primary)',whiteSpace:'pre-wrap'}},error):null),
+        error?h('div',{'role':'alert',style:{marginTop:8,color:'var(--dsw-alias-state-error-primary)',whiteSpace:'pre-wrap'}},error):null,
+        (reverseNotice || (reverseRows && reverseRows.length))?h('div',{'data-testid':'external-sync-reverse',style:{marginTop:8,fontSize:12,lineHeight:1.6}},
+          reverseNotice?h('div',{style:{color:color.muted}},'反同步：'+reverseNotice):null,
+          reverseRows && reverseRows.length?h('div',{style:{display:'flex',flexDirection:'column',gap:4,marginTop:4}},
+            reverseRows.map(row=>h('div',{key:row.sessionId,'data-external-reverse':row.sessionId,style:{display:'flex',gap:8,alignItems:'center'}},
+              h('span',{style:{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},(sessionState.byId?.[row.sessionId]?.title||'未命名会话')+` · ${row.turns} 轮 · ${String(row.threadId||'').slice(0,8)}`),
+              btn('反同步',()=>doReverse(row),reverseBusy,'external-sync-reverse-write')))):null):null),
       h('div',{style:{padding:'8px 12px',borderBottom:'1px solid '+color.border}},h('input',{placeholder:'搜索标题或项目目录',value:query,onChange:e=>setQuery(e.target.value),style:{...button,width:'100%',boxSizing:'border-box'}})),
       h('div',{style:{display:'flex',flex:1,minHeight:0}},
         h('div',{style:{width:main?230:180,maxWidth:'35%',flexShrink:0,overflow:'auto',borderRight:'1px solid '+color.border,padding:6}},

@@ -304,7 +304,7 @@ export function apply(ctx) {
       if(!target){results.push({sessionId:requested,key,threadId,turns:turns.length,error:'该 Codex 会话已没有 rollout 文件，无法回写'});continue;}
       const facts=readRolloutFacts(target);
       const records=[];
-      for(const turn of turns)records.push(...turnRecords({threadId:facts.threadId,modelContextWindow:facts.modelContextWindow,turn,ordinal:facts.lastOrdinal+1+records.length}));
+      for(const turn of turns)records.push(...turnRecords({threadId:facts.threadId,modelContextWindow:facts.modelContextWindow,contextTemplate:facts.contextTemplate,turn,ordinal:facts.lastOrdinal+1+records.length}));
       if(dryRun){
         results.push({sessionId:requested,key,threadId,rollout:target,forked,turns:turns.length,records:records.length,sample:records.slice(0,3),dryRun:true});
         continue;

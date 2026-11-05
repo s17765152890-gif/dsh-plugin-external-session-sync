@@ -83,6 +83,7 @@ export function readRolloutFacts(file) {
   let modelContextWindow = 258400;
   let lastOrdinal = -1;
   let lastTimestamp = null;
+  let contextTemplate = null;
   for (const line of lines) {
     let record;
     try { record = JSON.parse(line); } catch { continue; }
@@ -93,14 +94,17 @@ export function readRolloutFacts(file) {
     if (record.payload?.type === 'task_started' && record.payload.model_context_window) {
       modelContextWindow = record.payload.model_context_window;
     }
+    // Codex writes one turn_context per turn; reuse the previous one so an appended turn
+    // carries the same model, cwd and sandbox policy instead of looking foreign.
+    if (record.type === 'turn_context' && record.payload) contextTemplate = record.payload;
     if (Number.isInteger(record.ordinal)) lastOrdinal = Math.max(lastOrdinal, record.ordinal);
     if (record.timestamp) lastTimestamp = record.timestamp;
   }
-  return { threadId, modelContextWindow, lastOrdinal, lastTimestamp, recordCount: lines.length };
+  return { threadId, modelContextWindow, lastOrdinal, lastTimestamp, contextTemplate, recordCount: lines.length };
 }
 
 /** Build the Codex records for one DSH turn, mirroring what Codex itself writes. */
-export function turnRecords({ threadId, turn, ordinal, modelContextWindow }) {
+export function turnRecords({ threadId, turn, ordinal, modelContextWindow, contextTemplate }) {
   const startedMs = Number(turn.user.time) || Date.now();
   const completedMs = Number(turn.assistants.at(-1)?.time) || startedMs;
   const turnId = crypto.randomUUID();
@@ -122,6 +126,9 @@ export function turnRecords({ threadId, turn, ordinal, modelContextWindow }) {
     model_context_window: modelContextWindow,
     collaboration_mode_kind: 'default',
   });
+  if (contextTemplate) {
+    push('turn_context', { ...contextTemplate, turn_id: turnId, root_turn_id: turnId });
+  }
   push(
     'response_item',
     {
