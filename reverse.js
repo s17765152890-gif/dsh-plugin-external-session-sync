@@ -281,3 +281,58 @@ export function prefixMatches(child, parent) {
   if (parent.length > child.length) return false;
   return parent.every((message, index) => child[index] && child[index].role === message.role && child[index].text === message.text);
 }
+/* ------------------------------------------------------------------ *
+ * Export mode: a session with no external origin (or a fork whose      *
+ * ancestor was never imported) has no "main" to append to, so the      *
+ * whole conversation becomes a new Codex thread.                       *
+ * ------------------------------------------------------------------ */
+export function newRolloutPath(threadId, startedAtMs = Date.now()) {
+  const date = new Date(startedAtMs);
+  const pad = (value) => String(value).padStart(2, '0');
+  const dir = path.join(
+    process.env.CODEX_HOME || path.join(os.homedir(), '.codex'),
+    'sessions',
+    String(date.getFullYear()),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  );
+  const stamp = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}-${pad(date.getMinutes())}-${pad(date.getSeconds())}`;
+  return path.join(dir, `rollout-${stamp}-${threadId}.jsonl`);
+}
+
+/** session_meta plus one record sequence per turn, in Codex's own shape. */
+export function exportRecords({ threadId, cwd, startedAtMs, turns, contextTemplate, modelContextWindow }) {
+  const records = [];
+  const header = {
+    timestamp: new Date(startedAtMs).toISOString(),
+    ordinal: 0,
+    type: 'session_meta',
+    payload: {
+      session_id: threadId,
+      id: threadId,
+      timestamp: new Date(startedAtMs).toISOString(),
+      cwd,
+      runtime_workspace_roots: [cwd],
+      originator: 'Codex Desktop',
+      cli_version: '0.166.0',
+      source: 'vscode',
+      thread_source: 'user',
+      model_provider: 'custom',
+      history_mode: 'full',
+      context_window: modelContextWindow || 475000,
+    },
+  };
+  records.push(header);
+  for (const turn of turns) {
+    records.push(
+      ...turnRecords({
+        threadId,
+        turn,
+        ordinal: records.length,
+        modelContextWindow: modelContextWindow || 475000,
+        contextTemplate,
+      }),
+    );
+  }
+  return records;
+}

@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { SyncEngine } from './engine.js';
 import { nativeEvents } from './native.js';
-import { planReverse, appendTurns, readRolloutFacts, turnRecords, readSessionHeader, sessionMessages, pendingTurns, prefixMatches, targetRollout } from './reverse.js';
+import { planReverse, appendTurns, readRolloutFacts, turnRecords, readSessionHeader, sessionMessages, pendingTurns, prefixMatches, targetRollout, newRolloutPath, exportRecords } from './reverse.js';
 
 export const name = 'dsh-plugin-external-session-sync';
 
@@ -22,7 +22,7 @@ export const inject = [
 ];
 
 export const API = '/external-session-sync';
-const VERSION = '1.7.2';
+const VERSION = '1.7.3';
 const PACKAGE_ID = 'dsh-plugin-external-session-sync';
 const MAX_BODY_BYTES = 64 * 1024;
 const DIAGNOSTIC_EVENTS = 60;
@@ -97,12 +97,6 @@ export function apply(ctx) {
     lastSync = await engine.sync(await readBody(req));
     send(res, lastSync);
   });
-
-  route('/sync', 'POST', async (req, res) => {
-    lastSync = await engine.sync(await readBody(req));
-    send(res, lastSync);
-  });
-
   route('/archive', 'POST', async (req, res) => {
     const request = await readBody(req);
     const requested = [...new Set(Array.isArray(request.sessionIds) ? request.sessionIds.filter(Boolean) : [])];
@@ -217,9 +211,15 @@ export function apply(ctx) {
   route('/unarchive', 'POST', async (req, res) => {
     const request = await readBody(req);
     const requested = [...new Set(Array.isArray(request.sessionIds) ? request.sessionIds.filter(Boolean) : [])];
+    const tombstones = engine.state.deleted || {};
     const unarchived = [];
     const failed = [];
     for (const sessionId of requested) {
+      // A deleted payload can never come back: refuse instead of showing a broken chat.
+      if (tombstones[sessionId]) {
+        failed.push({ id: sessionId, error: '该会话的正文已被永久删除，无法取消归档' });
+        continue;
+      }
       try {
         await ctx.workspaceRegistry.unarchiveSession(sessionId);
         unarchived.push(sessionId);
@@ -256,7 +256,7 @@ export function apply(ctx) {
     while(!mapped && chain.length<8){
       const head=readSessionHeader(current);
       const parentId=head?.header?.parentSession;
-      if(!parentId)return {error:'该会话不是导入会话，也不是导入会话的 fork，没有可回写的 Codex 主线'};
+      if(!parentId)return {error:'该会话没有 Codex 来源，也不是导入会话的 fork'};
       chain.push({id:current,parentId});
       current=parentId;
       mapped=findEntry(current);
@@ -264,59 +264,126 @@ export function apply(ctx) {
     if(!mapped)return {error:'父链过深，无法定位导入来源'};
     const [key,entry]=mapped;
     if(!chain.length)return {key,entry,boundary:Number(entry.messages)||0,forked:false};
-    // The fork's seeded prefix must still equal its parent, otherwise the boundary is a guess.
     let parentMessages;
     try{parentMessages=sessionMessages((await ctx.sessionController.inspect(chain[0].parentId)).events);}
     catch(error){return {error:`无法读取父会话：${error.message}`};}
     return {key,entry,boundary:parentMessages.length,parentId:chain[0].parentId,parentMessages,forked:true};
   };
+
+  // Sidebar-shaped source for the reverse page: projects with their unarchived sessions.
+  route('/reverse-groups','GET',async(req,res)=>{
+    const archived=new Set(ctx.workspaceRegistry.archivedSessionIds || []);
+    const groups=ctx.workspaceRegistry.list().map(workspace=>({
+      id:workspace.id,
+      title:workspace.title,
+      path:workspace.path,
+      sessionIds:(workspace.sessionIds || []).filter(id=>!archived.has(id)),
+    })).filter(group=>group.sessionIds.length);
+    send(res,{groups,archived:archived.size});
+  });
+
+  // Classify one session: append to its Codex main, or export it as a new Codex thread.
+  // Message preview for the reverse page: what would be written for this DSH session.
+  route('/session-preview','GET',async(req,res,url)=>{
+    const sessionId=url.searchParams.get('id');
+    const maxMessages=Math.max(1,Math.min(200,Number(url.searchParams.get('maxMessages'))||40));
+    if(!sessionId)return send(res,{error:'缺少 id'},400);
+    let inspected;
+    try{inspected=await ctx.sessionController.inspect(sessionId);}
+    catch(error){return send(res,{error:'无法读取会话：'+error.message},500);}
+    const messages=sessionMessages(inspected.events);
+    const tail=messages.slice(-maxMessages);
+    send(res,{sessionId,total:messages.length,shown:tail.length,messages:tail.map(message=>({role:message.role,text:message.text.length>600?message.text.slice(0,600)+'…':message.text,time:message.time}))});
+  });
+
+  route('/reverse-targets','POST',async(req,res)=>{
+    const request=await readBody(req);
+    const ids=[...new Set(Array.isArray(request.sessionIds)?request.sessionIds.filter(Boolean):[])];
+    if(!ids.length)return send(res,{error:'必须显式指定 sessionIds'},400);
+    const rows=[];
+    for(const sessionId of ids.slice(0,400)){
+      let events;
+      try{events=(await ctx.sessionController.inspect(sessionId)).events;}
+      catch(error){rows.push({sessionId,mode:'error',error:'无法读取会话：'+error.message});continue;}
+      const messages=sessionMessages(events);
+      const resolved=await resolveSource(sessionId);
+      if(resolved.error){
+        const turns=pendingTurns(messages,0);
+        rows.push({sessionId,mode:'export',messages:messages.length,turns:turns.length});
+        continue;
+      }
+      const {key,boundary,parentMessages,forked}=resolved;
+      const prefixOk=!forked || prefixMatches(messages,parentMessages);
+      const turns=prefixOk?pendingTurns(messages,boundary):[];
+      const threadId=key.slice(key.indexOf(':')+1);
+      rows.push({sessionId,mode:'append',threadId,key,forked,prefixOk,messages:messages.length,importedCount:boundary,turns:turns.length,hasRollout:!!targetRollout(threadId)});
+    }
+    send(res,{requested:ids.length,rows});
+  });
+
   route('/reverse','POST',async(req,res)=>{
     const request=await readBody(req);
     const dryRun=request.dryRun!==false;
     const wanted=[...new Set(Array.isArray(request.sessionIds)?request.sessionIds.filter(Boolean):[])];
     const results=[];
-    // Explicit selection only: a reverse sync rewrites another tool's history, so an
-    // unscoped request must never fan out to every imported conversation.
     if(!wanted.length){
       return send(res,{error:'必须显式指定 sessionIds，反同步不会自动处理全部会话'},400);
     }
     for(const requested of wanted){
-      const resolved=await resolveSource(requested);
-      if(resolved.error){results.push({sessionId:requested,error:resolved.error});continue;}
-      const {key,entry,boundary,parentMessages,forked}=resolved;
       let events;
       try{events=(await ctx.sessionController.inspect(requested)).events;}
-      catch(error){results.push({sessionId:requested,key,error:`无法读取会话：${error.message}`});continue;}
+      catch(error){results.push({sessionId:requested,error:`无法读取会话：${error.message}`});continue;}
       const messages=sessionMessages(events);
+      const resolved=await resolveSource(requested);
+
+      if(resolved.error){
+        // Export: a session that never came from Codex becomes a new Codex thread.
+        const turns=pendingTurns(messages,0);
+        if(!turns.length){results.push({sessionId:requested,mode:'export',turns:0,note:'没有可导出的完整轮次（缺少助手回复）'});continue;}
+        const threadId=crypto.randomUUID();
+        const startedAt=Number(turns[0].user.time)||Date.now();
+        const target=newRolloutPath(threadId,startedAt);
+        const records=exportRecords({threadId,cwd:request.cwd||home,startedAtMs:startedAt,turns});
+        if(dryRun){
+          results.push({sessionId:requested,mode:'export',threadId,rollout:target,turns:turns.length,records:records.length,sample:records.slice(0,2),dryRun:true});
+          continue;
+        }
+        try{
+          fs.mkdirSync(path.dirname(target),{recursive:true});
+          fs.writeFileSync(target,records.map(record=>JSON.stringify(record)).join('\n')+'\n');
+          const written=fs.readFileSync(target,'utf8').split('\n').filter(Boolean).map(line=>JSON.parse(line));
+          results.push({sessionId:requested,mode:'export',threadId,rollout:target,turns:turns.length,records:records.length,appended:records.length,verified:written.length===records.length});
+        }catch(error){results.push({sessionId:requested,mode:'export',error:'导出失败：'+error.message});}
+        continue;
+      }
+
+      const {key,entry,boundary,parentMessages,forked}=resolved;
       if(forked && !prefixMatches(messages,parentMessages)){
         results.push({sessionId:requested,key,error:'fork 的种子前缀与父会话不一致，拒绝回写'});
         continue;
       }
       const turns=pendingTurns(messages,boundary);
-      const already=entry.reversed?.[requested];
-      if(!turns.length){results.push({sessionId:requested,key,turns:0,note:'没有仅存在于 DSH 的新轮次'});continue;}
-      if(already && already.turns===turns.length && dryRun!==false){
-        results.push({sessionId:requested,key,turns:turns.length,note:'这些轮次已回写过（重复请求被跳过）'});
-        continue;
-      }
+      if(!turns.length){results.push({sessionId:requested,key,mode:'append',turns:0,note:'没有仅存在于 DSH 的新轮次'});continue;}
       const threadId=key.slice(key.indexOf(':')+1);
       const target=targetRollout(threadId);
-      if(!target){results.push({sessionId:requested,key,threadId,turns:turns.length,error:'该 Codex 会话已没有 rollout 文件，无法回写'});continue;}
+      if(!target){results.push({sessionId:requested,key,threadId,mode:'append',turns:turns.length,error:'该 Codex 会话已没有 rollout 文件，无法回写'});continue;}
       const facts=readRolloutFacts(target);
       const records=[];
       for(const turn of turns)records.push(...turnRecords({threadId:facts.threadId,modelContextWindow:facts.modelContextWindow,contextTemplate:facts.contextTemplate,turn,ordinal:facts.lastOrdinal+1+records.length}));
       if(dryRun){
-        results.push({sessionId:requested,key,threadId,rollout:target,forked,turns:turns.length,records:records.length,sample:records.slice(0,3),dryRun:true});
+        results.push({sessionId:requested,key,threadId,mode:'append',rollout:target,forked,turns:turns.length,records:records.length,sample:records.slice(0,3),dryRun:true});
         continue;
       }
       const written=appendTurns(target,records);
       entry.reversed={...(entry.reversed||{}),[requested]:{turns:turns.length,messages:messages.length,at:Date.now(),threadId}};
       entry.reverseThrough=(Number(entry.reverseThrough)||0)+turns.length;
       engine.save();
-      results.push({sessionId:requested,key,threadId,rollout:target,forked,turns:turns.length,records:records.length,...written});
+      results.push({sessionId:requested,key,threadId,mode:'append',rollout:target,forked,turns:turns.length,records:records.length,...written});
     }
     send(res,{dryRun,results,done:results.filter(row=>row.verified).length,failed:results.filter(row=>row.error).length});
   });
+  // Permanent deletion of archived session payloads. Dry run unless dryRun is false.
+  route('/delete-archived', 'POST', async (req, res) => send(res, await engine.deleteArchived(await readBody(req))));
 
   route('/health', 'GET', async (req, res) =>
     send(res, {

@@ -84,6 +84,40 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
     }
     return h('button',{type:'button',style:button,'data-testid':'dsh-archive-old',disabled:busy,title:`归档 ${DSH_ARCHIVE_MONTHS} 个月前的 DSH 会话（置顶跳过）`,onClick:run},busy?'归档中…':'旧会话归档',wide?null:null);
   }
+  /** Footer action: permanently delete the payload of archived DSH sessions. */
+  function DeleteArchivedFooterButton({wide}) {
+    const [busy,setBusy]=React.useState(false);
+    React.useEffect(()=>{report('dsh-delete-button-mounted',{wide:!!wide});},[]);
+    function say(message) {
+      try { if (typeof window!=='undefined' && typeof window.alert==='function') window.alert(message); } catch {}
+    }
+    async function run() {
+      if(busy)return;
+      setBusy(true);
+      try {
+        const plan=await api('/delete-archived',{dryRun:true});
+        if(!plan.candidates){say('没有可删除的已归档会话。');report('dsh-delete-empty',{});return;}
+        const mb=(plan.bytes/1048576).toFixed(1);
+        const ask=typeof window!=='undefined' && typeof window.confirm==='function'
+          ? window.confirm(`将永久删除 ${plan.candidates} 个已归档会话（约 ${mb} MB）。\n置顶、正在打开、已删除的会话会跳过。删除后无法恢复，也没有备份。继续？`)
+          : false;
+        if(!ask){report('dsh-delete-cancelled',{count:plan.candidates});return;}
+        const again=typeof window!=='undefined' && typeof window.confirm==='function'
+          ? window.confirm(`再次确认：永久删除 ${plan.candidates} 个已归档会话，不可恢复。`)
+          : false;
+        if(!again){report('dsh-delete-cancelled',{count:plan.candidates,stage:'second'});return;}
+        const result=await api('/delete-archived',{dryRun:false});
+        const freed=(result.freedBytes/1048576).toFixed(2);
+        say(`已删除 ${result.deleted} 个会话，释放 ${freed} MB。${result.remaining>0?`\n仍有 ${result.remaining} 个可继续清理。`:''}${result.failed.length?`\n失败 ${result.failed.length} 个。`:''}`);
+        report('dsh-delete-complete',{deleted:result.deleted,freedBytes:result.freedBytes,remaining:result.remaining,failed:result.failed.length});
+      }catch(error){
+        say('删除失败：'+error.message);
+        report('dsh-delete-error',{error:error.message});
+      }
+      finally{setBusy(false);}
+    }
+    return h('button',{type:'button',style:button,'data-testid':'dsh-delete-archived',disabled:busy,title:'永久删除已归档会话的正文与存档（不可恢复）',onClick:run},busy?'删除中…':'删除已归档');
+  }
   function Panel({useTabInfo,useWorkspaces,useSessions,main=false}) {
     const info=typeof useTabInfo==='function'?useTabInfo():null;
     // Never read a service off the Context unless it is injected: Cordis throws for a
@@ -99,6 +133,7 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
     const [source,setSource]=React.useState('codex'),[query,setQuery]=React.useState(''),[busy,setBusy]=React.useState(false),[loading,setLoading]=React.useState(false),[refreshing,setRefreshing]=React.useState(true),[notice,setNotice]=React.useState('正在读取会话列表…'),[error,setError]=React.useState(''),[archiveMonths,setArchiveMonths]=React.useState('1');
     const [tab,setTab]=React.useState('in');
     const [reverseRows,setReverseRows]=React.useState(null),[reverseBusy,setReverseBusy]=React.useState(false),[reverseNotice,setReverseNotice]=React.useState('');
+    const [reverseGroups,setReverseGroups]=React.useState([]),[reverseTarget,setReverseTarget]=React.useState(null),[reversePreview,setReversePreview]=React.useState([]);
     async function load() {
       const token=++catalogRequest.current;setRefreshing(true);setError('');
       try {
@@ -216,6 +251,53 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
       return()=>clearTimeout(timer);
     },[catalog,source,query]);
     const items=(catalog?.discovered||[]).filter(i=>i.source===source&&(!query || `${i.title} ${i.cwd}`.toLowerCase().includes(query.toLowerCase())));
+    async function loadReverseGroups(){
+      setReverseBusy(true);setReverseNotice('正在读取未归档会话…');
+      try{
+        const data=await api('/reverse-groups');
+        const groups=(data.groups || []).filter(group=>group.sessionIds.length);
+        setReverseGroups(groups);
+        const total=groups.reduce((sum,group)=>sum+group.sessionIds.length,0);
+        setReverseNotice('共 '+groups.length+' 个项目 / '+total+' 个未归档会话');
+        report('reverse-groups',{groups:groups.length,sessions:total,archived:data.archived || 0});
+      }catch(e){setReverseNotice('读取失败：'+e.message);report('reverse-groups-error',{error:e.message});}
+      finally{setReverseBusy(false);}
+    }
+    async function probeReverse(sessionId){
+      setReverseTarget(null);setReverseBusy(true);
+      try{
+        const data=await api('/reverse-targets',{sessionIds:[sessionId]});
+        const row=(data.rows || [])[0];
+        if(!row){setReverseNotice('没有拿到分类结果');return;}
+        setReverseTarget(row);
+        try{const preview=await api('/session-preview?id='+encodeURIComponent(sessionId)+'&maxMessages=60');setReversePreview(preview.messages || []);}
+        catch{setReversePreview([]);}
+        setReverseNotice(row.mode==='append'?(row.turns?'该会话有 '+row.turns+' 轮仅在 DSH 的新对话':'没有仅存在于 DSH 的新轮次'):row.mode==='export'?('将以 '+row.turns+' 轮新建一个 Codex 会话'):(row.error || '无法处理'));
+        report('reverse-probed',{sessionId,mode:row.mode,turns:row.turns || 0,forked:!!row.forked});
+      }catch(e){setReverseNotice('分类失败：'+e.message);}
+      finally{setReverseBusy(false);}
+    }
+    async function writeReverse(){
+      const target=reverseTarget;
+      if(!target || !(target.turns>0))return;
+      const title=sessionState.byId?.[target.sessionId]?.title || '未命名会话';
+      const what=target.mode==='append'
+        ? '把「'+title+'」中仅存在于 DSH 的 '+target.turns+' 轮对话，追加写入 Codex 会话 '+target.threadId+'？'
+        : '把「'+title+'」整段（'+target.turns+' 轮）导出为一个新的 Codex 会话？';
+      const ask=typeof window!=='undefined' && typeof window.confirm==='function'
+        ? window.confirm(what+'\n\n追加只增不改；导出会新建 rollout 文件。')
+        : false;
+      if(!ask){report('reverse-cancelled',{sessionId:target.sessionId});return;}
+      setReverseBusy(true);
+      try{
+        const result=await api('/reverse',{dryRun:false,sessionIds:[target.sessionId]});
+        const done=(result.results || [])[0] || {};
+        setReverseNotice(done.error?('失败：'+done.error):done.mode==='export'?('已导出为新的 Codex 会话（'+done.records+' 条记录）'):('已写入 '+done.appended+' 条记录（已备份）'));
+        if(done.verified)setReverseTarget(null);
+        report('reverse-complete',{sessionId:target.sessionId,mode:done.mode,appended:done.appended || 0,verified:!!done.verified});
+      }catch(e){setReverseNotice('反同步失败：'+e.message);report('reverse-error',{error:e.message});}
+      finally{setReverseBusy(false);}
+    }
     const btn=(text,fn,disabled,testid)=>h('button',{type:'button',style:button,onClick:fn,disabled,'data-testid':testid},text);
     return h('section',{ref:root,'data-testid':'external-sync-panel',style:{height:'100%',minHeight:0,display:'flex',flexDirection:'column',color:color.text,background:color.bg,fontSize:13}},
       h('div',{style:{padding:'12px',borderBottom:'1px solid '+color.border,flexShrink:0}},
@@ -234,13 +316,30 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
         tab==='in'&&error?h('div',{'role':'alert',style:{marginTop:8,color:'var(--dsw-alias-state-error-primary)',whiteSpace:'pre-wrap'}},error):null,
         tab==='out'?h('div',{'data-testid':'external-sync-reverse',style:{marginTop:8,fontSize:12,lineHeight:1.6}},
           h('div',{style:{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}},
-            btn(reverseBusy?'检查中…':'扫描可反同步会话',scanReverse,reverseBusy,'external-sync-reverse-scan'),
+            btn(reverseBusy?'处理中…':'读取未归档会话',loadReverseGroups,reverseBusy,'external-sync-reverse-scan'),
             reverseNotice?h('span',{style:{color:color.muted}},reverseNotice):null),
-          h('div',{style:{marginTop:6,color:color.muted,fontSize:11}},'只列出「仅在 DSH 有新增轮次、且 Codex 仍有 rollout 文件」的会话；写入是追加，不覆盖，写前自动备份。'),
-          reverseRows && reverseRows.length?h('div',{style:{display:'flex',flexDirection:'column',gap:4,marginTop:6}},
-            reverseRows.map(row=>h('div',{key:row.sessionId,'data-external-reverse':row.sessionId,style:{display:'flex',gap:8,alignItems:'center'}},
-              h('span',{style:{flex:1,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},(sessionState.byId?.[row.sessionId]?.title||'未命名会话')+` · ${row.turns} 轮 · ${String(row.threadId||'').slice(0,8)}`),
-              btn('反同步',()=>doReverse(row),reverseBusy,'external-sync-reverse-write')))):null):null),
+          h('div',{style:{marginTop:6,color:color.muted,fontSize:11}},'按项目列出全部未归档会话（含 DSH 原生会话与接力 fork）。导入会话追加到其 Codex 主线；原生会话导出为新的 Codex 会话。'),
+          reverseTarget?h('div',{'data-testid':'external-sync-reverse-target',style:{marginTop:8,padding:8,border:'1px solid '+color.border,borderRadius:6}},
+            h('div',{style:{fontWeight:600}},reverseTarget.mode==='append'?'追加到 Codex 主线':'导出为新的 Codex 会话'),
+            h('div',{style:{color:color.muted,marginTop:2}},reverseTarget.mode==='append'?('线程 '+String(reverseTarget.threadId||'').slice(0,8)+' · 待写入 '+(reverseTarget.turns||0)+' 轮'+(reverseTarget.forked?'（fork）':'')):('将新建线程 · '+(reverseTarget.turns||0)+' 轮')),
+            h('div',{style:{marginTop:6}},btn(reverseBusy?'写入中…':'确认反同步',writeReverse,reverseBusy||!(reverseTarget.turns>0),'external-sync-reverse-write'))):null):null),
+      tab==='out'?h('div',{style:{display:'flex',flex:1,minHeight:0}},
+        h('div',{style:{width:main?250:190,maxWidth:'40%',flexShrink:0,overflow:'auto',borderRight:'1px solid '+color.border,padding:6}},
+          !reverseGroups.length?h('div',{style:{padding:8,color:color.muted,fontSize:12}},reverseNotice||'点击上方「读取未归档会话」'):null,
+          reverseGroups.map(group=>h('div',{key:group.id,style:{marginBottom:8}},
+            h('div',{style:{fontSize:10,fontWeight:650,color:color.muted,padding:'2px 4px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},group.title||group.path),
+            group.sessionIds.map(sid=>{
+              const summary=sessionState.byId?.[sid]||{};
+              const active=reverseTarget && reverseTarget.sessionId===sid;
+              return h('button',{key:sid,type:'button','data-external-reverse':sid,onClick:()=>probeReverse(sid),title:summary.title||'',style:{display:'block',width:'100%',textAlign:'left',background:active?color.layer:'transparent',border:0,color:color.text,borderRadius:6,padding:'5px 8px',cursor:'pointer',fontSize:12,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}},summary.title||'未命名会话');
+            })))),
+        h('div',{style:{flex:1,minWidth:0,overflow:'auto',padding:12}},
+          reversePreview.length?h(React.Fragment,null,
+            h('div',{style:{fontSize:11,color:color.muted,marginBottom:8}},'最近 '+reversePreview.length+' 条消息预览'),
+            reversePreview.map((message,index)=>h('div',{key:index,style:{marginBottom:10}},
+              h('div',{style:{fontSize:10,color:color.muted}},message.role==='user'?'用户':'助手'),
+              h('div',{style:{fontSize:12,whiteSpace:'pre-wrap',lineHeight:1.55,overflowWrap:'anywhere'}},message.text))))
+            :h('div',{style:{color:color.muted,fontSize:12}},reverseTarget?'正在读取消息预览…':'左侧选择一个会话，这里会显示它的消息内容'))):null,
       h('div',{style:{display:tab==='in'?'block':'none',padding:'8px 12px',borderBottom:'1px solid '+color.border}},h('input',{placeholder:'搜索标题或项目目录',value:query,onChange:e=>setQuery(e.target.value),style:{...button,width:'100%',boxSizing:'border-box'}})),
       h('div',{style:{display:tab==='in'?'flex':'none',flex:1,minHeight:0}},
         h('div',{style:{width:main?230:180,maxWidth:'35%',flexShrink:0,overflow:'auto',borderRight:'1px solid '+color.border,padding:6}},
@@ -275,6 +374,7 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
     ctx.effect(()=>ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:PANEL_ID},withBoundary(props=>h(Panel,{...props,main:true})))),'external-sync.main');
     ctx.effect(()=>ctx.slots.inject('sidebar.footer.action',()=>ctx.slots.register({name:'sidebar.footer.action',id:ID+'.footer',order:35,label:'外部会话同步'},OpenButton)),'external-sync.footer');
     ctx.effect(()=>ctx.slots.inject('sidebar.footer.action',()=>ctx.slots.register({name:'sidebar.footer.action',id:ID+'.footer.archive',order:36,label:'旧会话归档'},ArchiveFooterButton)),'external-sync.footer-archive');
+  ctx.effect(()=>ctx.slots.inject('sidebar.footer.action',()=>ctx.slots.register({name:'sidebar.footer.action',id:ID+'.footer.delete',order:37,label:'删除已归档'},DeleteArchivedFooterButton)),'external-sync.footer-delete');
     ctx.effect(()=>ctx.slots.inject('conversation.session.header.utilities',()=>ctx.slots.register({name:'conversation.session.header.utilities',id:ID+'.header',order:35,label:'会话同步'},NativeMarker)),'external-sync.header');
     ctx.effect(()=>ctx.slots.inject('sidebar.right.pane.tab',()=>ctx.slots.register({name:'sidebar.right.pane.tab',key:ID},withBoundary(Panel))),'external-sync.body');
     ctx.effect(()=>ctx.slots.inject('sidebar.right.pane.tab.title',()=>ctx.slots.register({name:'sidebar.right.pane.tab.title',key:ID},()=>h('span',null,'Codex / Claude 上下文'))),'external-sync.title');
