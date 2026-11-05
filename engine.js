@@ -19,6 +19,7 @@ import {
 } from './readers.js';
 import { nativeEvents, nativeId, canonicalCwd } from './native.js';
 import { discoverCodexThreads } from './discovery.js';
+import { planSessionDeletion, deleteSessionPayload } from './cleanup.js';
 
 const visibleMessages = (events) =>
   events.filter((event) => event.type === 'user/message' || event.type === 'assistant/message');
@@ -361,6 +362,78 @@ export class SyncEngine {
     }
     this.lastReport = report;
     return report;
+  }
+
+  /** Archived sessions whose payload may be deleted: never pinned, live or already deleted. */
+  async deletableArchived(options = {}) {
+    const sessionsRoot = path.join(this.home, 'sessions');
+    const archived = Array.from(this.ctx.workspaceRegistry.archivedSessionIds || [], String);
+    const pinned = new Set(Array.from(this.ctx.workspaceRegistry.pinnedSessionIds || [], String));
+    const tombstones = this.state.deleted || {};
+    const wanted = Array.isArray(options.ids) ? new Set(options.ids.map(String)) : null;
+    const rows = [];
+    for (const sessionId of archived) {
+      if (pinned.has(sessionId) || tombstones[sessionId]) continue;
+      if (wanted && !wanted.has(sessionId)) continue;
+      // A chat that is currently open is never deleted out from under its agent.
+      try {
+        if (this.ctx.sessions.get(sessionId)) continue;
+      } catch {}
+      const plan = planSessionDeletion({ sessionsRoot, archivesRoot: this.archiveRoot, sessionId });
+      const entry = Object.values(this.state.entries).find((item) => item.sessionId === sessionId);
+      rows.push({ ...plan, title: entry?.title || null });
+    }
+    return rows;
+  }
+
+  /**
+   * Permanently delete archived session payloads. Dry run unless `dryRun:false`.
+   * The id stays in the registry's archived list and a tombstone is recorded, so the
+   * session never resurfaces as an unreadable chat.
+   */
+  async deleteArchived(options = {}) {
+    const rows = (await this.deletableArchived(options)).sort((a, b) => b.bytes - a.bytes);
+    const limit = Math.max(1, Math.min(500, Number(options.limit) || rows.length || 1));
+    const batch = rows.slice(0, limit);
+    const bytes = batch.reduce((sum, row) => sum + row.bytes, 0);
+    if (options.dryRun !== false) {
+      return {
+        dryRun: true,
+        candidates: rows.length,
+        batch: batch.length,
+        bytes,
+        missingPayload: rows.filter((row) => !row.exists).length,
+        sample: batch.slice(0, 8).map(({ sessionId, title, bytes }) => ({ sessionId, title, bytes })),
+      };
+    }
+    this.state.deleted ||= {};
+    const journal = { startedAt: new Date().toISOString(), rows: [] };
+    let freedBytes = 0;
+    for (const row of batch) {
+      try {
+        const result = deleteSessionPayload({ sessionsRoot: path.join(this.home, 'sessions'), archivesRoot: this.archiveRoot, sessionId: row.sessionId });
+        freedBytes += result.bytes || 0;
+        this.state.deleted[row.sessionId] = { deletedAt: Date.now(), title: row.title, bytes: result.bytes || 0 };
+        for (const [key, entry] of Object.entries(this.state.entries)) if (entry.sessionId === row.sessionId) delete this.state.entries[key];
+        this.save();
+        journal.rows.push({ sessionId: row.sessionId, title: row.title, bytes: result.bytes || 0, ok: true });
+      } catch (error) {
+        journal.rows.push({ sessionId: row.sessionId, title: row.title, ok: false, error: error.message });
+      }
+    }
+    journal.finishedAt = new Date().toISOString();
+    journal.freedBytes = freedBytes;
+    fs.mkdirSync(path.join(this.home, 'external-session-sync'), { recursive: true });
+    fs.writeFileSync(path.join(this.home, 'external-session-sync', `deletions-${Date.now()}.json`), JSON.stringify(journal, null, 2));
+    const remaining = await this.deletableArchived({});
+    return {
+      dryRun: false,
+      deleted: journal.rows.filter((row) => row.ok).length,
+      failed: journal.rows.filter((row) => !row.ok),
+      freedBytes,
+      remaining: remaining.length,
+      deletedSessionIds: journal.rows.filter((row) => row.ok).map((row) => row.sessionId),
+    };
   }
 
   async validateSession(id) {

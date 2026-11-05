@@ -216,9 +216,15 @@ export function apply(ctx) {
   route('/unarchive', 'POST', async (req, res) => {
     const request = await readBody(req);
     const requested = [...new Set(Array.isArray(request.sessionIds) ? request.sessionIds.filter(Boolean) : [])];
+    const tombstones = engine.state.deleted || {};
     const unarchived = [];
     const failed = [];
     for (const sessionId of requested) {
+      // A deleted payload can never come back: refuse instead of showing a broken chat.
+      if (tombstones[sessionId]) {
+        failed.push({ id: sessionId, error: '该会话的正文已被永久删除，无法取消归档' });
+        continue;
+      }
       try {
         await ctx.workspaceRegistry.unarchiveSession(sessionId);
         unarchived.push(sessionId);
@@ -228,6 +234,9 @@ export function apply(ctx) {
     }
     send(res, { requested: requested.length, unarchived, failed });
   });
+
+  // Permanent deletion of archived session payloads. Dry run unless dryRun is false.
+  route('/delete-archived', 'POST', async (req, res) => send(res, await engine.deleteArchived(await readBody(req))));
 
   route('/legacy-imports', 'GET', async (req, res) => {
     const rows = await engine.legacyImports();

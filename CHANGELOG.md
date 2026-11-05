@@ -2,6 +2,20 @@
 
 All notable changes to `dsh-plugin-external-session-sync`.
 
+## 1.2.0 — 2026-11-06
+
+### Added
+
+- **Permanent deletion of archived sessions.** `POST /external-session-sync/delete-archived`
+  removes the archived session log under `$DSH_HOME/sessions/<project>/<session-id>` and the
+  plugin's plain-text archive, then records a tombstone. Dry run unless `dryRun:false`.
+  - Never touches pinned, currently-open, non-archived or already-deleted sessions.
+  - Every path is validated as `<sessions-root>/<one project slot>/<session-id>` before it is removed.
+  - Each run writes a journal at `$DSH_HOME/external-session-sync/deletions-<timestamp>.json`.
+  - `/unarchive` now refuses a tombstoned id instead of surfacing an unreadable chat.
+- Sidebar footer action **删除已归档**: two confirmation dialogs, then deletes and reports the
+  reclaimed byte count.
+
 ## 1.1.1 — 2026-11-02
 
 ### Added

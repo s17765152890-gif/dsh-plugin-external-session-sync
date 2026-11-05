@@ -84,6 +84,33 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
     }
     return h('button',{type:'button',style:button,'data-testid':'dsh-archive-old',disabled:busy,title:`归档 ${DSH_ARCHIVE_MONTHS} 个月前的 DSH 会话（置顶跳过）`,onClick:run},busy?'归档中…':'旧会话归档',wide?null:null);
   }
+  const DELETE_CONFIRM = '删除后无法恢复，也没有备份。确定继续？';
+  /** Footer action: permanently delete the payload of archived DSH sessions. */
+  function DeleteArchivedFooterButton({wide}) {
+    const [busy,setBusy]=React.useState(false);
+    React.useEffect(()=>{report('dsh-delete-button-mounted',{wide:!!wide});},[]);
+    async function run() {
+      if(busy)return;
+      setBusy(true);
+      try {
+        const plan=await api('/delete-archived',{dryRun:true});
+        if(!plan.candidates){report('dsh-delete-empty',{});return;}
+        const mb=(plan.bytes/1048576).toFixed(1);
+        const ask=typeof window!=='undefined' && typeof window.confirm==='function'
+          ? window.confirm(`将永久删除 ${plan.candidates} 个已归档会话（约 ${mb} MB）。\n置顶、正在打开、已删除的会话会跳过。${DELETE_CONFIRM}`)
+          : false;
+        if(!ask){report('dsh-delete-cancelled',{count:plan.candidates});return;}
+        const again=typeof window!=='undefined' && typeof window.confirm==='function'
+          ? window.confirm(`再次确认：永久删除 ${plan.candidates} 个已归档会话，不可恢复。`)
+          : false;
+        if(!again){report('dsh-delete-cancelled',{count:plan.candidates,stage:'second'});return;}
+        const result=await api('/delete-archived',{dryRun:false});
+        report('dsh-delete-complete',{deleted:result.deleted,freedBytes:result.freedBytes,remaining:result.remaining,failed:result.failed.length});
+      }catch(error){report('dsh-delete-error',{error:error.message});}
+      finally{setBusy(false);}
+    }
+    return h('button',{type:'button',style:button,'data-testid':'dsh-delete-archived',disabled:busy,title:'永久删除已归档会话的正文与存档（不可恢复）',onClick:run},busy?'删除中…':'删除已归档');
+  }
   function Panel({useTabInfo,useWorkspaces,main=false}) {
     const info=typeof useTabInfo==='function'?useTabInfo():null;
     // Never read a service off the Context unless it is injected: Cordis throws for a
@@ -222,6 +249,7 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
     ctx.effect(()=>ctx.slots.inject('main',()=>ctx.slots.register({name:'main',key:PANEL_ID},withBoundary(props=>h(Panel,{...props,main:true})))),'external-sync.main');
     ctx.effect(()=>ctx.slots.inject('sidebar.footer.action',()=>ctx.slots.register({name:'sidebar.footer.action',id:ID+'.footer',order:35,label:'外部会话同步'},OpenButton)),'external-sync.footer');
     ctx.effect(()=>ctx.slots.inject('sidebar.footer.action',()=>ctx.slots.register({name:'sidebar.footer.action',id:ID+'.footer.archive',order:36,label:'旧会话归档'},ArchiveFooterButton)),'external-sync.footer-archive');
+  ctx.effect(()=>ctx.slots.inject('sidebar.footer.action',()=>ctx.slots.register({name:'sidebar.footer.action',id:ID+'.footer.delete',order:37,label:'删除已归档'},DeleteArchivedFooterButton)),'external-sync.footer-delete');
     ctx.effect(()=>ctx.slots.inject('conversation.session.header.utilities',()=>ctx.slots.register({name:'conversation.session.header.utilities',id:ID+'.header',order:35,label:'会话同步'},NativeMarker)),'external-sync.header');
     ctx.effect(()=>ctx.slots.inject('sidebar.right.pane.tab',()=>ctx.slots.register({name:'sidebar.right.pane.tab',key:ID},withBoundary(Panel))),'external-sync.body');
     ctx.effect(()=>ctx.slots.inject('sidebar.right.pane.tab.title',()=>ctx.slots.register({name:'sidebar.right.pane.tab.title',key:ID},()=>h('span',null,'Codex / Claude 上下文'))),'external-sync.title');
