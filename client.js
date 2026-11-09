@@ -262,7 +262,7 @@ window.__ModuleLoader__.load({id:'dsh-plugin-external-session-sync',factory:(req
     ctx.effect(()=>ctx.slots.inject('sidebar.right.pane.tab',()=>ctx.slots.register({name:'sidebar.right.pane.tab',key:ID},withBoundary(Panel))),'external-sync.body');
     ctx.effect(()=>ctx.slots.inject('sidebar.right.pane.tab.title',()=>ctx.slots.register({name:'sidebar.right.pane.tab.title',key:ID},()=>h('span',null,'Codex / Claude 上下文'))),'external-sync.title');
     ctx.effect(()=>{
-      report('client-mounted',{version:'1.0.0'});
+      report('client-mounted',{version:'1.2.0'});
       const initial=setTimeout(()=>{try{ctx.sidebarRight.openTab(KIND);}catch{}},500);
       return()=>clearTimeout(initial);
     },'external-sync.initial-panel');
