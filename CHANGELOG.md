@@ -1,3 +1,7 @@
+# Changelog
+
+All notable changes to `dsh-plugin-external-session-sync`.
+
 ## 1.8.0 — 2026-11-10
 
 ### Changed
@@ -15,9 +19,13 @@
   and tolerates a service without `open()` — covered by three new tests (28 total).
 - Test fixtures now expose `open()` so the suite exercises the same path as production.
 
-# Changelog
+### Credits
 
-All notable changes to `dsh-plugin-external-session-sync`.
+- **Thanks to [@rumeng2580](https://github.com/rumeng2580)** — PR
+  [#1](https://github.com/s17765152890-gif/dsh-plugin-external-session-sync/pull/1) identified
+  that `sessionController.inspect` had been removed upstream and that reading through
+  `sessionPersistence.open(id, 'read')` is the supported replacement. This feature branch now
+  uses the same API-first path, with the decoded log demoted to a fallback.
 
 ## 1.2.0 — 2026-11-06
 
