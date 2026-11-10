@@ -21,7 +21,7 @@ export const inject = [
 ];
 
 export const API = '/external-session-sync';
-const VERSION = '1.0.0';
+const VERSION = '1.2.0';
 const PACKAGE_ID = 'dsh-plugin-external-session-sync';
 const MAX_BODY_BYTES = 64 * 1024;
 const DIAGNOSTIC_EVENTS = 60;
@@ -91,11 +91,6 @@ export function apply(ctx) {
   route('/conversation', 'GET', async (req, res, url) =>
     send(res, await engine.conversation(url.searchParams.get('source'), url.searchParams.get('id'), url.searchParams.get('maxMessages'))),
   );
-
-  route('/sync', 'POST', async (req, res) => {
-    lastSync = await engine.sync(await readBody(req));
-    send(res, lastSync);
-  });
 
   route('/sync', 'POST', async (req, res) => {
     lastSync = await engine.sync(await readBody(req));
