@@ -21,7 +21,7 @@ export const inject = [
 ];
 
 export const API = '/external-session-sync';
-const VERSION = '1.2.0';
+const VERSION = '1.2.1';
 const PACKAGE_ID = 'dsh-plugin-external-session-sync';
 const MAX_BODY_BYTES = 64 * 1024;
 const DIAGNOSTIC_EVENTS = 60;

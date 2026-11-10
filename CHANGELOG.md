@@ -2,6 +2,24 @@
 
 All notable changes to `dsh-plugin-external-session-sync`.
 
+## 1.2.1 — 2026-11-10
+
+### Fixed
+
+- **The plugin could not activate on current DSH.** `POST /external-session-sync/sync` was
+  registered twice, so the Host row failed with `duplicate exact route` and nothing mounted.
+- **Every session read failed with 500.** `sessionController.inspect` no longer exists on
+  current DSH; stored sessions are now read through `sessionPersistence.open(id, 'read')`,
+  which returns the validated header and events and closes the handle afterwards.
+- `/health` and `client-mounted` now report the real version instead of `1.0.0`.
+
+### Credits
+
+- **Thanks to [@rumeng2580](https://github.com/rumeng2580)** — PR
+  [#1](https://github.com/s17765152890-gif/dsh-plugin-external-session-sync/pull/1) diagnosed
+  both root causes and proposed the `sessionPersistence.open(id, 'read')` fix that this release
+  ships. The duplicate-route failure in particular meant 1.2.0 was unusable on a recent build.
+
 ## 1.2.0 — 2026-11-06
 
 ### Added
