@@ -20,7 +20,14 @@ A standard DSH (DeepSeek Harness) plugin bundle that imports **Codex** and **Cla
 
 ## Install
 
-Install the directory as a DSH bundle (Plugin Manager → install bundle from a local package directory), or add the row by hand to your profile patch:
+**From npm** (published as [`dsh-plugin-external-session-sync`](https://www.npmjs.com/package/dsh-plugin-external-session-sync), MIT):
+
+```bash
+cd ~/.dsh/profiles/<your-profile>      # %USERPROFILE%\.dsh\profiles\<profile> on Windows
+npm install dsh-plugin-external-session-sync
+```
+
+Then add the row to that profile's `cordis.patch.yml` and restart DSH:
 
 ```yaml
 - insert:
@@ -28,7 +35,11 @@ Install the directory as a DSH bundle (Plugin Manager → install bundle from a 
       name: dsh-plugin-external-session-sync
 ```
 
+**From a checkout**: install the directory as a DSH bundle (Plugin Manager → install bundle from a local package directory), or add the same row pointing at the cloned directory.
+
 Requirements: DSH with the Web client, Node.js 22.5+ (the readers use the built-in `node:sqlite`, and degrade to filesystem-only discovery when it is unavailable).
+
+Verify: `GET http://127.0.0.1:<dsh-port>/external-session-sync/health` returns JSON with `version`, and `$DSH_HOME/external-session-sync/runtime.log` ends with `mounted dsh-plugin-external-session-sync`. If health 404s, check that the patch row is not `disabled: true`.
 
 ## Use
 
@@ -118,6 +129,15 @@ The suite covers thread-index discovery, multi-rollout merging, snapshot stabili
 ## 中文速览
 
 这是一个标准 DSH 插件包：把 Codex / Claude Code 的历史会话导入为 DSH 原生会话，校验项目归属后可继续对话，并支持按时间批量归档旧会话。
+
+安装（npm 已发布，MIT）：
+
+```bash
+cd ~/.dsh/profiles/<你的profile>
+npm install dsh-plugin-external-session-sync
+```
+
+然后在 `cordis.patch.yml` 里加一行 `- id: external-session-sync-native` / `name: dsh-plugin-external-session-sync`，重启 DSH，访问 `/external-session-sync/health` 确认版本。
 
 - 左侧「Codex 同步」打开同步页；聊天标题旁「会话同步」打开右侧上下文面板。
 - 同步完成需同时满足：正文可读、原会话 id 恢复成功、已登记到对应项目。
