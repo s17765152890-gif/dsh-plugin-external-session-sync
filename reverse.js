@@ -336,3 +336,116 @@ export function exportRecords({ threadId, cwd, startedAtMs, turns, contextTempla
   }
   return records;
 }
+/* ------------------------------------------------------------------ *
+ * Session reader: DSH's controller surface has changed across releases *
+ * (`sessionController.inspect` disappeared from this profile), so the  *
+ * plugin reads the stored log itself. This path is strictly read-only. *
+ * ------------------------------------------------------------------ */
+const ZSTD_MAGIC = [0x28, 0xb5, 0x2f, 0xfd];
+const eventCache = new Map();
+
+export function decodeSessionLines(file) {
+  const buf = fs.readFileSync(file);
+  if (!file.endsWith('.zstd')) return buf.toString('utf8').split('\n').filter((line) => line.trim());
+  const starts = [];
+  for (let i = 0; i + 3 < buf.length; i++) {
+    if (buf[i] === ZSTD_MAGIC[0] && buf[i + 1] === ZSTD_MAGIC[1] && buf[i + 2] === ZSTD_MAGIC[2] && buf[i + 3] === ZSTD_MAGIC[3]) starts.push(i);
+  }
+  starts.push(buf.length);
+  const lines = [];
+  for (let f = 0; f + 1 < starts.length; f++) {
+    const slice = buf.subarray(starts[f], starts[f + 1]);
+    if (slice.length < 8) continue;
+    let text;
+    try { text = zlib.zstdDecompressSync(slice).toString('utf8'); } catch { continue; }
+    for (const line of text.split('\n')) if (line.trim()) lines.push(line);
+  }
+  return lines;
+}
+
+/** { meta, events } for one stored session, or null when the log cannot be read. */
+export function readSessionEvents(sessionId, options = {}) {
+  if (!sessionId) return null;
+  const cached = eventCache.get(sessionId);
+  const mtimeKey = `${sessionId}`;
+  if (cached && !options.force) {
+    try {
+      const stat = fs.statSync(cached.file);
+      if (stat.mtimeMs === cached.mtime) return cached.value;
+    } catch {
+      eventCache.delete(mtimeKey);
+    }
+  }
+  const file = sessionLogFile(sessionId);
+  if (!file) return null;
+  const lines = decodeSessionLines(file);
+  let meta = null;
+  const events = [];
+  for (const line of lines) {
+    let record;
+    try { record = JSON.parse(line); } catch { continue; }
+    if (record.type === 'session') { meta = record; continue; }
+    events.push(record);
+  }
+  if (!meta) return null;
+  const value = { meta, events, file };
+  try { value.mtime = fs.statSync(file).mtimeMs; } catch { value.mtime = 0; }
+  eventCache.set(sessionId, { file, mtime: value.mtime, value });
+  return value;
+}
+
+export function clearSessionCache() {
+  eventCache.clear();
+}
+/* ------------------------------------------------------------------ *
+ * API-first session access.                                         *
+ * DSH exposes stored sessions through sessionPersistence.open(id,     *
+ * 'read'); that handle carries the header and the validated events.  *
+ * It is the supported path and survives format changes, so it is     *
+ * always tried first. The raw-log decoder above stays as a fallback  *
+ * for the case where the service is unavailable or refuses a log     *
+ * (for example a legacy format the current build cannot restore).    *
+ * ------------------------------------------------------------------ */
+export async function openSessionViaPersistence(ctx, sessionId) {
+  const persistence = ctx && ctx.sessionPersistence;
+  if (!persistence || typeof persistence.open !== 'function') return null;
+  let handle;
+  try {
+    handle = await persistence.open(sessionId, 'read');
+    const read = await handle.read();
+    const events = Array.isArray(read) ? read : read && Array.isArray(read.events) ? read.events : [];
+    return { meta: handle.header || null, events, file: null, via: 'persistence' };
+  } catch {
+    return null;
+  } finally {
+    try { await handle?.close(); } catch { /* handle may already be released */ }
+  }
+}
+
+/** Read one stored session: supported API first, decoded log second. */
+export async function readSessionAny(ctx, sessionId, options = {}) {
+  if (!sessionId) return null;
+  const viaApi = await openSessionViaPersistence(ctx, sessionId);
+  if (viaApi) return viaApi;
+  const viaDisk = readSessionEvents(sessionId, options);
+  if (!viaDisk) return null;
+  return { ...viaDisk, via: 'log' };
+}
+
+/** Header only (parent chain resolution): API first, decoded log second. */
+export async function readHeaderAny(ctx, sessionId) {
+  if (!sessionId) return null;
+  const persistence = ctx && ctx.sessionPersistence;
+  if (persistence && typeof persistence.open === 'function') {
+    let handle;
+    try {
+      handle = await persistence.open(sessionId, 'read');
+      if (handle.header) return { header: handle.header, file: null, via: 'persistence' };
+    } catch {
+      /* fall through to the decoded log */
+    } finally {
+      try { await handle?.close(); } catch { /* ignore */ }
+    }
+  }
+  return readSessionHeader(sessionId);
+}

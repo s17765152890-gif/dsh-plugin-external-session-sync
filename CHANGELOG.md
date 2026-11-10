@@ -1,3 +1,20 @@
+## 1.8.0 — 2026-11-10
+
+### Changed
+
+- Session reads go through DSH's supported API first: `sessionPersistence.open(id, 'read')`
+  returns the validated header and events, so the plugin no longer depends on
+  `sessionController.inspect` (removed upstream) or on decoding the log format itself.
+- The raw-log decoder stays as a fallback for logs the current build refuses to restore,
+  and a missing or failing `open()` degrades instead of throwing.
+- Fork ancestry reads the header through the same API-first path (`readHeaderAny`).
+
+### Verified
+
+- `readSessionAny` closes every handle it opens, falls back when the service refuses a log,
+  and tolerates a service without `open()` — covered by three new tests (28 total).
+- Test fixtures now expose `open()` so the suite exercises the same path as production.
+
 # Changelog
 
 All notable changes to `dsh-plugin-external-session-sync`.

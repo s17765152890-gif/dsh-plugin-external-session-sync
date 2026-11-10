@@ -13,7 +13,7 @@ function fixture(t,{stored=true,member=false,failAttach=false}={}) {
   const events=[{type:'user/message',data:{content:[{type:'text',text:'question'}]}},{type:'assistant/message',data:{message:{content:[{type:'text',text:'answer'}]}}}];
   const workspace={id:'workspace-1',title:'project',path:home,sessionIds:member?[id]:[],async attachSession(target){calls.attach++;if(failAttach)throw new Error('attach denied');if(!this.sessionIds.includes(target))this.sessionIds.push(target);}};
   const inspected={meta:{id,cwd:home},events};
-  const ctx={sessionPersistence:{async stat(){return stored?{header:inspected.meta}:undefined;},async create(){calls.create++;stored=true;return {async append(){calls.append++;},async flush(){},async close(){}};}},
+  const ctx={sessionPersistence:{async stat(){return stored?{header:inspected.meta}:undefined;},async open(){return {header:inspected.meta,async read(){return {events};},async close(){}};},async create(){calls.create++;stored=true;return {async append(){calls.append++;},async flush(){},async close(){}};}},
     sessions:{prepare(){calls.prepare++;return {header:inspected.meta};},get(){return {deriveMessages:()=>[{role:'user'},{role:'assistant'}]};}},
     sessionController:{async inspect(){return inspected;},async resolveAgent(target){calls.resolve++;return {agent:{id:target}};},async create(){throw new Error('must never create a blank conversation');}},
     workspaceRegistry:{async create(){return workspace;},list(){return [workspace];}}};

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {sessionMessages,cleanUserText,pendingTurns,prefixMatches,turnRecords} from '../reverse.js';
+import {sessionMessages,cleanUserText,pendingTurns,prefixMatches,turnRecords,openSessionViaPersistence,readSessionAny,readHeaderAny} from '../reverse.js';
 
 const event=(type,data,time=0)=>({type,seq:0,time,data});
 
@@ -66,4 +66,35 @@ test('turn records mirror the Codex sequence',()=>{
   assert.equal(records[5].payload.last_agent_message,'hi');
   assert.equal(records[2].payload.thread_id,'thread-1');
   for(const record of records) assert.ok(!Number.isNaN(Date.parse(record.timestamp)));
+});
+test('sessions are read through the persistence API when it is available', async () => {
+  let closed = 0;
+  const events = [{type: 'user/message', data: {content: [{type: 'text', text: 'q'}]}}];
+  const ctx = {
+    sessionPersistence: {
+      async open(id, access) {
+        assert.equal(access, 'read');
+        assert.equal(id, 'session-x');
+        return {header: {id, cwd: 'C:\\p'}, async read() { return {events}; }, async close() { closed += 1; }};
+      },
+    },
+  };
+  const viaApi = await openSessionViaPersistence(ctx, 'session-x');
+  assert.equal(viaApi.via, 'persistence');
+  assert.equal(viaApi.events.length, 1);
+  assert.equal(viaApi.meta.cwd, 'C:\\p');
+  assert.equal(closed, 1, 'the handle must be closed');
+  const read = await readSessionAny(ctx, 'session-x');
+  assert.equal(read.via, 'persistence');
+});
+
+test('a refusing persistence service falls back instead of throwing', async () => {
+  const ctx = {sessionPersistence: {async open() { throw new Error('unsupported format'); }}};
+  assert.equal(await readSessionAny(ctx, 'session-does-not-exist'), null);
+  assert.equal(await readHeaderAny(ctx, 'session-does-not-exist'), null);
+});
+
+test('a service without open() is tolerated', async () => {
+  assert.equal(await readSessionAny({sessionPersistence: {}}, 'session-y'), null);
+  assert.equal(await readSessionAny(null, 'session-y'), null);
 });

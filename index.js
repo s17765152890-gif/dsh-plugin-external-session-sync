@@ -6,7 +6,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { SyncEngine } from './engine.js';
 import { nativeEvents } from './native.js';
-import { planReverse, appendTurns, readRolloutFacts, turnRecords, readSessionHeader, sessionMessages, pendingTurns, prefixMatches, targetRollout, newRolloutPath, exportRecords } from './reverse.js';
+import { planReverse, appendTurns, readRolloutFacts, turnRecords, readSessionHeader, readSessionAny, readHeaderAny, sessionMessages, pendingTurns, prefixMatches, targetRollout, newRolloutPath, exportRecords } from './reverse.js';
 
 export const name = 'dsh-plugin-external-session-sync';
 
@@ -22,7 +22,7 @@ export const inject = [
 ];
 
 export const API = '/external-session-sync';
-const VERSION = '1.7.3';
+const VERSION = '1.8.0';
 const PACKAGE_ID = 'dsh-plugin-external-session-sync';
 const MAX_BODY_BYTES = 64 * 1024;
 const DIAGNOSTIC_EVENTS = 60;
@@ -254,7 +254,7 @@ export function apply(ctx) {
     const chain=[];
     let current=sessionId;
     while(!mapped && chain.length<8){
-      const head=readSessionHeader(current);
+      const head=await readHeaderAny(ctx,current);
       const parentId=head?.header?.parentSession;
       if(!parentId)return {error:'该会话没有 Codex 来源，也不是导入会话的 fork'};
       chain.push({id:current,parentId});
@@ -265,7 +265,7 @@ export function apply(ctx) {
     const [key,entry]=mapped;
     if(!chain.length)return {key,entry,boundary:Number(entry.messages)||0,forked:false};
     let parentMessages;
-    try{parentMessages=sessionMessages((await ctx.sessionController.inspect(chain[0].parentId)).events);}
+    try{const parent=await readSessionAny(ctx,chain[0].parentId);if(!parent)throw new Error('父会话日志不可读');parentMessages=sessionMessages(parent.events);}
     catch(error){return {error:`无法读取父会话：${error.message}`};}
     return {key,entry,boundary:parentMessages.length,parentId:chain[0].parentId,parentMessages,forked:true};
   };
@@ -288,9 +288,8 @@ export function apply(ctx) {
     const sessionId=url.searchParams.get('id');
     const maxMessages=Math.max(1,Math.min(200,Number(url.searchParams.get('maxMessages'))||40));
     if(!sessionId)return send(res,{error:'缺少 id'},400);
-    let inspected;
-    try{inspected=await ctx.sessionController.inspect(sessionId);}
-    catch(error){return send(res,{error:'无法读取会话：'+error.message},500);}
+    const inspected=await readSessionAny(ctx,sessionId);
+    if(!inspected)return send(res,{error:'无法读取会话：日志不可读'},500);
     const messages=sessionMessages(inspected.events);
     const tail=messages.slice(-maxMessages);
     send(res,{sessionId,total:messages.length,shown:tail.length,messages:tail.map(message=>({role:message.role,text:message.text.length>600?message.text.slice(0,600)+'…':message.text,time:message.time}))});
@@ -303,8 +302,9 @@ export function apply(ctx) {
     const rows=[];
     for(const sessionId of ids.slice(0,400)){
       let events;
-      try{events=(await ctx.sessionController.inspect(sessionId)).events;}
-      catch(error){rows.push({sessionId,mode:'error',error:'无法读取会话：'+error.message});continue;}
+      const read=await readSessionAny(ctx,sessionId);
+      if(!read){rows.push({sessionId,mode:'error',error:'无法读取会话：日志不可读'});continue;}
+      events=read.events;
       const messages=sessionMessages(events);
       const resolved=await resolveSource(sessionId);
       if(resolved.error){
@@ -331,8 +331,9 @@ export function apply(ctx) {
     }
     for(const requested of wanted){
       let events;
-      try{events=(await ctx.sessionController.inspect(requested)).events;}
-      catch(error){results.push({sessionId:requested,error:`无法读取会话：${error.message}`});continue;}
+      const read=await readSessionAny(ctx,requested);
+      if(!read){results.push({sessionId:requested,error:'无法读取会话：日志不可读'});continue;}
+      events=read.events;
       const messages=sessionMessages(events);
       const resolved=await resolveSource(requested);
 

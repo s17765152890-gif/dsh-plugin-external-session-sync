@@ -19,6 +19,7 @@ import {
 } from './readers.js';
 import { nativeEvents, nativeId, canonicalCwd } from './native.js';
 import { discoverCodexThreads } from './discovery.js';
+import { readSessionAny } from './reverse.js';
 
 const visibleMessages = (events) =>
   events.filter((event) => event.type === 'user/message' || event.type === 'assistant/message');
@@ -184,7 +185,7 @@ export class SyncEngine {
   async usableSession(id) {
     try {
       if (!(await this.ctx.sessionPersistence.stat(id))) return { exists: false, corrupt: false };
-      await this.ctx.sessionController.inspect(id);
+      await readSessionAny(this.ctx, id, { force: true });
       return { exists: true, corrupt: false };
     } catch (error) {
       if (/corrupt/i.test(String(error && error.message))) return { exists: true, corrupt: true };
@@ -233,7 +234,7 @@ export class SyncEngine {
           if (state.corrupt) report.recovered.push({ key, previous: previous.sessionId, reason: 'corrupt-session-log' });
         }
         if (reusable) {
-          const inspected = await this.ctx.sessionController.inspect(previous.sessionId);
+          const inspected = await readSessionAny(this.ctx, previous.sessionId);
           const messages = visibleMessages(inspected.events).length;
           if (!messages) throw new Error('已同步会话没有有效消息，无法标记为同步完成');
           if (report.dryRun) {
@@ -309,7 +310,7 @@ export class SyncEngine {
           }
         }
 
-        const inspected = await this.ctx.sessionController.inspect(id);
+        const inspected = await readSessionAny(this.ctx, id, { force: true });
         const count = visibleMessages(inspected.events).length;
         if (count < conversation.messages.length) {
           throw new Error(`DSH 还原消息数不完整 (${count}/${conversation.messages.length})`);
@@ -368,7 +369,7 @@ export class SyncEngine {
       (entry) => entry.sessionId === id || entry.previousSessionIds?.includes(id),
     );
     if (!owned) throw new Error('这不是同步模块创建的会话');
-    const read = await this.ctx.sessionController.inspect(id);
+    const read = await readSessionAny(this.ctx, id, { force: true });
     const messages = visibleMessages(read.events);
     const resolved = await this.ctx.sessionController.resolveAgent(id);
     if (resolved.error) throw resolved.error;
@@ -397,7 +398,7 @@ export class SyncEngine {
 /** Does this stored session open with a protected system head? Uses the public reader. */
   async inspectHead(sessionId) {
     try {
-      const read = await this.ctx.sessionController.inspect(sessionId);
+      const read = await readSessionAny(this.ctx, sessionId);
       const first = read.events.find(
         (event) => event.surfaceOp === 'append' || ['system/message', 'user/message', 'developer/message', 'assistant/message', 'tool/result'].includes(event.type),
       );
